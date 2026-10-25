@@ -304,3 +304,4 @@ As documented in `_docs/plan.md` Section 9, the following features are deliberat
 - Formal dispute and chargeback resolution workflows.
 - Push and email notification systems.
 - Arabic and French interface translations (version 1 is English-only).
+
