@@ -219,7 +219,7 @@ project1-dtc/
 │   ├── plan.md          # Product specification, business rules, and acceptance checks
 │   ├── tasks.md         # Full task backlog (Tasks 1 through 15)
 │   ├── process.md       # Development process and agent role workflow
-│   ├── pm.md            # Product Manager role guidelines
+│   ├── team/pm.md            # Product Manager role guidelines
 │   └── task-template.md # Task specification template
 ├── src/
 │   ├── app.js           # Express app setup, middleware, and route mounting
@@ -248,7 +248,7 @@ project1-dtc/
 - [_docs/plan.md](file:///c:/Users/lyna/Desktop/Ai-dev-tools-zoomcamp/Project1/project1-dtc/_docs/plan.md) - Product specification, business rules, and acceptance criteria.
 - [_docs/tasks.md](file:///c:/Users/lyna/Desktop/Ai-dev-tools-zoomcamp/Project1/project1-dtc/_docs/tasks.md) - Task backlog and acceptance requirements.
 - [_docs/process.md](file:///c:/Users/lyna/Desktop/Ai-dev-tools-zoomcamp/Project1/project1-dtc/_docs/process.md) - Development process and organization.
-- [_docs/pm.md](file:///c:/Users/lyna/Desktop/Ai-dev-tools-zoomcamp/Project1/project1-dtc/_docs/pm.md) - Product Manager agent instructions and definition of done.
+- [_docs/team/pm.md](file:///c:/Users/lyna/Desktop/Ai-dev-tools-zoomcamp/Project1/project1-dtc/_docs/team/pm.md) - Product Manager agent instructions and definition of done.
 - [_docs/task-template.md](file:///c:/Users/lyna/Desktop/Ai-dev-tools-zoomcamp/Project1/project1-dtc/_docs/task-template.md) - Structured task template.
 - [AGENTS.md](file:///c:/Users/lyna/Desktop/Ai-dev-tools-zoomcamp/Project1/project1-dtc/AGENTS.md) - AI agent operational guidelines and core rules.
 
@@ -261,7 +261,7 @@ project1-dtc/
 
 ## How AI Tools Were Used
 
-Development follows an agentic workflow defined in `_docs/process.md` and `_docs/pm.md`.
+Development follows an agentic workflow defined in `_docs/process.md` and `_docs/team/pm.md`.
 
 ### Agent Roles
 1. **Product Manager (PM):** Grooms backlog tasks before any implementation begins. Using `_docs/task-template.md`, the PM defines clear goals, checkable acceptance criteria, explicit constraints, and isolates out-of-scope items into linked follow-up issues. The PM does not write code.
@@ -276,7 +276,7 @@ Development follows an agentic workflow defined in `_docs/process.md` and `_docs
 5. Code is committed, pushed to `main`, and the GitHub issue is closed.
 
 ### What Was Actually Done
-To date, the project documentation (`plan.md`, `tasks.md`, `process.md`, `pm.md`, `task-template.md`, `AGENTS.md`) was authored, the task backlog was mapped into GitHub Issues #6 through #20, the repository scaffolding (Express, Drizzle ORM, Vite, React, Tailwind CSS, Docker Compose) was configured, and the initial health test suite was implemented and verified passing.
+To date, the project documentation (`plan.md`, `tasks.md`, `process.md`, `team/pm.md`, `task-template.md`, `AGENTS.md`) was authored, the task backlog was mapped into GitHub Issues #6 through #20, the repository scaffolding (Express, Drizzle ORM, Vite, React, Tailwind CSS, Docker Compose) was configured, and the initial health test suite was implemented and verified passing.
 
 ---
 
