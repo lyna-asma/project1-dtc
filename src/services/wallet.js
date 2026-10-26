@@ -1,4 +1,4 @@
-import { eq, or, desc, inArray } from 'drizzle-orm';
+import { eq, or, desc, inArray, sql } from 'drizzle-orm';
 import { db } from '../db/index.js';
 import { users, wallets, transactions } from '../db/schema.js';
 
@@ -146,3 +146,147 @@ export async function recordTransaction({
 
   return createdTx;
 }
+
+/**
+ * Load shop balance by admin inside an atomic database transaction
+ */
+export async function adminLoadShopBalance({
+  merchantId,
+  amountDinars,
+  description,
+  _testFailureAfterBalanceUpdate = false,
+}, dbClient = db) {
+  // Validate merchantId
+  const merchantIdStr = String(merchantId);
+  const isPositiveIntegerString = /^[1-9]\d*$/.test(merchantIdStr);
+  const parsedMerchantId = Number(merchantIdStr);
+
+  if (!isPositiveIntegerString || !Number.isSafeInteger(parsedMerchantId)) {
+    const err = new Error('Invalid merchant ID');
+    err.statusCode = 400;
+    throw err;
+  }
+
+  // Validate amountDinars
+  if (amountDinars === undefined) {
+    const err = new Error('amountDinars is required');
+    err.statusCode = 400;
+    throw err;
+  }
+
+  if (
+    typeof amountDinars !== 'number' ||
+    !Number.isInteger(amountDinars) ||
+    amountDinars <= 0
+  ) {
+    const err = new Error('amountDinars must be a positive integer');
+    err.statusCode = 400;
+    throw err;
+  }
+
+  if (amountDinars > Number.MAX_SAFE_INTEGER) {
+    const err = new Error('amountDinars exceeds maximum allowed value');
+    err.statusCode = 400;
+    throw err;
+  }
+
+  return await dbClient.transaction(async (tx) => {
+    // 1. Verify merchant exists
+    const [targetUser] = await tx
+      .select()
+      .from(users)
+      .where(eq(users.id, parsedMerchantId))
+      .limit(1);
+
+    if (!targetUser) {
+      const err = new Error('Merchant not found');
+      err.statusCode = 404;
+      throw err;
+    }
+
+    // 2. Verify target user has role 'merchant'
+    if (targetUser.role !== 'merchant') {
+      const err = new Error('Target user is not a merchant');
+      err.statusCode = 400;
+      throw err;
+    }
+
+    // 3. Find or create merchant wallet (initial balance = 0)
+    let [wallet] = await tx
+      .select()
+      .from(wallets)
+      .where(eq(wallets.userId, targetUser.id))
+      .limit(1);
+
+    if (!wallet) {
+      [wallet] = await tx
+        .insert(wallets)
+        .values({
+          userId: targetUser.id,
+          balance: 0,
+        })
+        .returning();
+    }
+
+    // 4. Update wallet balance: integer centimes math
+    const amountCentimes = amountDinars * 100;
+
+    const [updatedWallet] = await tx
+      .update(wallets)
+      .set({
+        balance: sql`${wallets.balance} + ${amountCentimes}`,
+      })
+      .where(eq(wallets.id, wallet.id))
+      .returning();
+
+    // Hook to test transaction rollback
+    if (_testFailureAfterBalanceUpdate) {
+      throw new Error('Simulated failure after balance update');
+    }
+
+    // 5. Append-only ledger record in transactions
+    const finalDescription =
+      typeof description === 'string' && description.trim()
+        ? description.trim()
+        : 'Admin shop balance load';
+
+    const [createdTx] = await tx
+      .insert(transactions)
+      .values({
+        type: 'admin_load',
+        fromWalletId: null,
+        toWalletId: wallet.id,
+        amount: amountCentimes,
+        feeAmount: 0,
+        status: 'completed',
+        description: finalDescription,
+      })
+      .returning();
+
+    const finalBalanceCentimes = Number(updatedWallet.balance);
+    const finalBalanceDinars = Math.floor(finalBalanceCentimes / 100);
+
+    return {
+      message: 'Shop balance loaded successfully',
+      transaction: {
+        id: createdTx.id,
+        type: createdTx.type,
+        amountDinars,
+        amountCentimes,
+        toWalletId: createdTx.toWalletId,
+        createdAt:
+          createdTx.createdAt instanceof Date
+            ? createdTx.createdAt.toISOString()
+            : new Date(createdTx.createdAt).toISOString(),
+      },
+      shop: {
+        id: targetUser.id,
+        name: targetUser.name,
+        phone: targetUser.phone,
+        balanceDinars: finalBalanceDinars,
+        balanceCentimes: finalBalanceCentimes,
+      },
+    };
+  });
+}
+
