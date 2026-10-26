@@ -20,7 +20,7 @@ People who want to pay digitally but earn and hold cash need a place to put that
 - Sign up with a phone number and a password.
 - Hand cash to a shop and receive it in the wallet.
 - Pay a shop.
-- Send money to another customer by phone number.
+- Send money to another customer by phone number (planned for a future version).
 - See their own history of money movements.
 
 **Merchant (a shop)**
@@ -30,8 +30,8 @@ People who want to pay digitally but earn and hold cash need a place to put that
 
 **Admin (the startup owner)**
 - Load money into a shop's balance.
-- Approve shops.
-- Reverse a transaction.
+- Approve shops (planned for a future version).
+- Reverse a transaction (planned for a future version).
 - See all transactions.
 
 No other roles exist in version 1.
@@ -57,7 +57,7 @@ Merchants get only the features the customer journey needs. *Why:* the customer 
 **R4. A balance never goes below zero.** (Confirmed)
 A payment or transfer that would do so is rejected with a clear message. *Why:* it forces the app to check the balance and subtract in one step, which is the main safety rule against spending the same money twice. Overdraft is a credit feature and is in the backlog.
 
-**R5. Three limits, fixed in one configuration file.** (Confirmed)
+**R5. Three limits, fixed in one configuration file (planned for a future version).** (Confirmed)
 - Maximum 50,000 DA per transaction.
 - Maximum 100,000 DA per customer per day.
 - Maximum balance of 200,000 DA per customer wallet.
@@ -76,10 +76,10 @@ When a shop credits a customer with X DA, the shop balance goes down by X and th
 **R9. A shop starts a payment and the customer confirms it with their password.** (Delegated)
 The shop enters the amount and gets a payment code. The customer types the code, sees the shop name and the exact amount, and confirms. Money moves only after confirmation. *Why:* the customer sees what they pay before anything moves, and a shop cannot charge without approval. Scanning a QR code with the camera is in the backlog.
 
-**R10. A customer can send money to another customer by phone number.** (Confirmed)
+**R10. A customer can send money to another customer by phone number (planned for a future version).** (Confirmed)
 The app shows the registered name of the recipient before the sender confirms with their password. The money arrives immediately and the recipient approves nothing. *Why:* showing the name reduces the chance of sending to a mistyped number. The same rules as payments apply.
 
-**R11. History is never edited. Only an admin can reverse a transaction.** (Confirmed)
+**R11. History is never edited. Only an admin can reverse a transaction (reversals are planned for a future version).** (Confirmed)
 A reversal is a new transaction that moves the money back, and the original is marked as reversed. If the receiver has already spent the money, the reversal is rejected, because balances cannot go below zero. Customer or shop refund requests inside the app are in the backlog. *Why:* the history must always tell the truth about what happened.
 
 **R12. Safety when things happen at the same moment.** (Delegated)
@@ -96,9 +96,9 @@ A reversal is a new transaction that moves the money back, and the original is m
 
 **Payment.** The shop enters an amount and gets a code. The customer enters the code, checks the shop name and amount, and confirms with the password. The customer balance goes down and the shop balance goes up.
 
-**Transfer.** The sender enters the recipient's phone number and amount, checks the recipient's name, and confirms with the password.
+**Transfer (planned for a future version).** The sender enters the recipient's phone number and amount, checks the recipient's name, and confirms with the password.
 
-**Reversal.** The admin selects a transaction and reverses it, which adds a new transaction in the opposite direction.
+**Reversal (planned for a future version).** The admin selects a transaction and reverses it, which adds a new transaction in the opposite direction.
 
 **Load shop balance.** The admin enters a shop and an amount, and the shop balance goes up by that amount.
 
@@ -112,12 +112,12 @@ Each line below must be provable by an automated test.
 4. A top-up larger than the shop balance is rejected and nothing changes.
 5. A confirmed payment lowers the customer balance and raises the shop balance by the same amount.
 6. A wrong password moves no money.
-7. A payment or transfer larger than the balance is rejected and the balance is unchanged.
-8. Amounts above 50,000 DA, a daily total above 100,000 DA, or a result above 200,000 DA in a customer wallet are rejected with a clear message.
-9. A transfer to an unknown phone number is rejected, and the confirmation screen shows the recipient's name.
+7. A payment or transfer (transfers planned for a future version) larger than the balance is rejected and the balance is unchanged.
+8. Amounts above 50,000 DA, a daily total above 100,000 DA, or a result above 200,000 DA in a customer wallet are rejected with a clear message (planned for a future version).
+9. A transfer to an unknown phone number is rejected, and the confirmation screen shows the recipient's name (planned for a future version).
 10. Two simultaneous payments of 800 DA from a balance of 1,000 DA: exactly one succeeds and the final balance is 200 DA.
 11. The same confirmation sent twice with the same request identifier charges once and returns the same result.
-12. An admin reversal moves the money back and marks the original. It fails if the receiver cannot cover it.
+12. An admin reversal moves the money back and marks the original. It fails if the receiver cannot cover it (planned for a future version).
 13. After any sequence of operations, the sum of all customer and shop balances equals the total the admin has loaded.
 14. A non-admin cannot use admin actions, and a customer cannot see another customer's history.
 
@@ -129,13 +129,13 @@ Each line below must be provable by an automated test.
 4. Admin loads a shop balance.
 5. Cash top-up.
 6. Payment.
-7. Limits.
-8. Concurrency and repeat-request tests.
-9. Transfers.
-10. Reversals.
-11. Shop history view and admin shop approval.
+7. Limits (planned for a future version).
+8. Concurrency and repeat-request tests (payment confirmation idempotency and dual payment concurrency test completed; general transfer idempotency and 50-request stress test planned for a future version).
+9. Transfers (planned for a future version).
+10. Reversals (planned for a future version).
+11. Shop history view and admin shop approval (shop approval planned for a future version).
 
-Delivery work runs alongside the build and is also scored: automated tests with one command, Docker Compose with one command, continuous integration, deployment to a public URL, and documentation. If time runs short, the build stops after step 8 and the delivery work still gets done.
+Delivery work runs alongside the build and is also scored: automated tests with one command, Docker Compose with one command, continuous integration, deployment to a public URL (deployment to a public URL planned for a future version), and documentation. If time runs short, the build stops after step 8 and the delivery work still gets done.
 
 ## 9. Backlog (not in version 1)
 
@@ -146,7 +146,7 @@ Real SMS sending, ID document checks, QR code scanning, fees, overdraft, several
 - A payment code is single-use and expires after 5 minutes. (Assumed)
 - The interface is in English in version 1. (Assumed)
 - The first admin account is created by a setup script. (Assumed)
-- A shop must be approved by the admin before it can be used. (Assumed)
+- A shop must be approved by the admin before it can be used. (Assumed; planned for a future version)
 - Passwords are stored hashed, and login uses tokens. (Assumed)
 - The history screen is a simple list per user, with no reports or exports. (Assumed)
 - The technology stack is not chosen yet. A relational database (PostgreSQL) is recommended because it can keep a balance check and the deduction in one step. To be confirmed in the stack step.

@@ -9,7 +9,7 @@ Read `_docs/plan.md` for business rules and acceptance criteria, and `_docs/task
 
 - **Backend:** Node.js + Express
 - **Database:** PostgreSQL + Drizzle ORM (`drizzle-kit` for migrations)
-- **Frontend:** React + Vite + Tailwind CSS
+- **Frontend:** React + Vite + Tailwind CSS (scaffolding present; full UI planned for a future version)
 - **Testing:** Vitest + Supertest
 - **Containers:** Docker Compose
 
@@ -28,8 +28,8 @@ Read `_docs/plan.md` for business rules and acceptance criteria, and `_docs/task
 - Dependencies are defined in `package.json`. Do not add new packages without asking first.
 - **Currency & Amounts:** Input is whole Algerian Dinars (DZD). Store all balances and transaction amounts in the database as integer centimes (`dinars * 100`). Never use floating-point numbers for money.
 - **No Negative Balances:** A wallet balance must never go below zero (`CHECK (balance >= 0)`). Check balance and deduct atomically in a single database transaction using row-level locking (`SELECT ... FOR UPDATE`).
-- **Append-Only Ledger:** Transaction history rows are only ever added; never update or delete existing ledger rows. Reversals add a new offsetting transaction and mark the original as reversed.
-- **Centralized Limits:** Keep the three customer limits (50,000 DA per transaction, 100,000 DA per customer per day, 200,000 DA max customer wallet balance) in one central configuration file.
+- **Append-Only Ledger:** Transaction history rows are only ever added; never update or delete existing ledger rows. Reversals add a new offsetting transaction and mark the original as reversed (reversals are planned for a future version).
+- **Centralized Limits:** Keep the three customer limits (50,000 DA per transaction, 100,000 DA per customer per day, 200,000 DA max customer wallet balance) in one central configuration file (planned for a future version).
 - **Simulated OTP:** Keep one-time code sending behind a single replaceable function that logs/exposes codes for local review and automated tests without sending real SMS.
 - **Testing:** Every feature must have automated tests covering its acceptance checks in `_docs/plan.md`.
 
