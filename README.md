@@ -128,7 +128,7 @@ The project is organized across 15 tasks mirrored in GitHub Issues. Below is the
 - **Admin Shop Approval & Merchant Portal (Task 12 / Issue #16):** Planned for a future version. Merchant approval status checks and shop history isolation.
 - **Customer Journey UI (Task 13 / Issue #18):** Planned for a future version. React interface for customer sign-up, balance view, payment code entry, and transfers.
 - **Merchant & Admin Portals UI (Task 14 / Issue #19):** Planned for a future version. React interfaces for merchant top-ups and admin management.
-- **Public URL Deployment (Task 15 remaining / Issue #20):** Planned for a future version. Hosting deployment to a public URL.
+- **Public URL Deployment (Task 15 remaining / Issue #20):** Planned for a future version. **Not deployed yet**; the Render deployment steps are documented in the [Deployment](#deployment) section.
 
 ---
 
@@ -184,7 +184,7 @@ npm run dev
 - Seeded via `npm run seed:admin` (or automatically during Docker container startup), creating the initial admin user with phone `0555000000`, password `Admin1234!`, role `admin`, and an initialized wallet. Repeated execution is idempotent.
 
 ### Where to See the Simulated One-Time Code
-- When a customer or merchant registers via `POST /api/auth/register`, the 6-digit OTP code is logged directly to stdout (`[OTP SIMULATOR] Phone: ..., Code: ...`) and exposed in test/development mode via `GET /api/auth/otp/:phone`.
+- When a customer or merchant registers via `POST /api/auth/register` and `NODE_ENV` is not `production`, the 6-digit OTP code is logged directly to stdout (`[OTP SIMULATOR] Phone: ..., Code: ...`) and exposed via `GET /api/auth/otp/:phone`. In `NODE_ENV=production` (which the Docker Compose `app` service sets) the code is neither logged nor exposed, so sign-up can only be completed in development/test mode. The `docker compose up --build` stack therefore serves the API and seeded admin login, but not new sign-ups.
 
 ---
 
@@ -226,16 +226,22 @@ project1-dtc/
 │   ├── index.js         # HTTP server entrypoint with Vite development middleware
 │   ├── db/
 │   │   ├── index.js     # PostgreSQL connection pool and Drizzle client
-│   │   └── schema.js    # Drizzle ORM schema definitions (planned)
-│   └── client/          # React single-page frontend application
+│   │   └── schema.js    # Drizzle ORM schema (users, otp_codes, wallets, transactions, payment_requests, idempotency_keys)
+│   ├── middleware/      # JWT auth and role guards
+│   ├── routes/          # auth, customer, merchant, admin routes
+│   ├── services/        # OTP, wallet, and payment logic
+│   ├── scripts/         # Admin seed script
+│   └── client/          # React single-page frontend application (scaffold only)
 │       ├── App.jsx      # Root React component
 │       ├── main.jsx     # Frontend entrypoint
 │       └── index.css    # Tailwind CSS stylesheet
-├── tests/
-│   └── health.test.js   # Automated API health check tests
+├── drizzle/             # Generated SQL migrations
+├── tests/               # Automated Vitest + Supertest suites (9 files)
+├── .github/workflows/ci.yml  # GitHub Actions CI
 ├── .env.example         # Template for environment variables
 ├── AGENTS.md            # AI agent instructions, rules, and core commands
-├── docker-compose.yml   # Docker Compose services definition (PostgreSQL)
+├── Dockerfile           # Application image (migrate, seed admin, serve)
+├── docker-compose.yml   # PostgreSQL + application services
 ├── package.json         # Project metadata, dependencies, and npm scripts
 └── vite.config.js       # Vite configuration
 ```
@@ -283,7 +289,70 @@ Tasks 1 through 7 were completely implemented, verified with automated tests, an
 ## Continuous Integration and Deployment
 
 - **Continuous Integration:** Implemented in `.github/workflows/ci.yml`. A GitHub Actions workflow runs on every push and pull request to `main`, spins up a PostgreSQL 16 container, applies Drizzle migrations, executes the full test suite (`npm test`), and verifies the production build (`npm run build`).
-- **Deployment:** Deployment to a public URL is planned for a future version.
+- **Deployment:** **Not deployed yet.** There is no public URL. A step-by-step guide for deploying to Render is in the [Deployment](#deployment) section below; the actual deployment is planned for a future version.
+
+---
+
+## Deployment
+
+> **Not deployed yet.** This application is not currently hosted anywhere and there is no public URL. This section only documents the steps to deploy it to [Render](https://render.com). The steps have not been executed, so details of Render's dashboard may differ slightly from what is described here.
+
+The repository already contains everything Render needs: a `Dockerfile` (builds the React frontend, then at container start runs migrations, seeds the admin account, and starts the server on port 3000) and a GitHub Actions CI workflow.
+
+### Step 1: Prepare the repository
+1. Make sure the code is pushed to GitHub (`main` branch) and `npm test` passes.
+2. Create a free Render account and connect it to your GitHub account.
+
+### Step 2: Create the PostgreSQL database
+1. In the Render dashboard click **New +** → **PostgreSQL**.
+2. Choose a name (for example `wallet-db`), a database name (for example `wallet_db`), the PostgreSQL version 16, and the same region you will use for the web service.
+3. Click **Create Database** and wait until its status is **Available**.
+4. On the database page copy the **Internal Database URL** (it starts with `postgres://`). Use the internal URL because the web service and the database are in the same Render region.
+
+### Step 3: Create the web service from the Dockerfile
+1. Click **New +** → **Web Service** and select **Build and deploy from a Git repository**, then pick this repository.
+2. Set **Language / Runtime** to **Docker**. Render builds the image from the `Dockerfile` at the repository root, so no build or start command is needed (the `CMD` in the `Dockerfile` is used).
+3. Choose the same region as the database and an instance type.
+4. *Alternative:* if you prefer to deploy a prebuilt image, build and push it to a container registry (`docker build -t <registry>/wallet-app .` then `docker push <registry>/wallet-app`), and choose **Deploy an existing image from a registry** instead.
+
+### Step 4: Set the environment variables
+In the web service's **Environment** tab add:
+
+| Variable | Value |
+| :--- | :--- |
+| `NODE_ENV` | `production` (serves the built frontend from `dist/`) |
+| `PORT` | `3000` (the port the `Dockerfile` exposes) |
+| `DATABASE_URL` | The **Internal Database URL** copied in Step 2 |
+| `JWT_SECRET` | A long random secret (do not reuse the development default) |
+| `ADMIN_PHONE` | Phone number of the initial admin account (default `0555000000`) |
+| `ADMIN_PASSWORD` | A strong password for the admin account (default `Admin1234!` must not be used publicly) |
+| `ADMIN_NAME` | Display name of the admin account (default `Platform Admin`) |
+
+### Step 5: Run the migrations and the admin seed
+The `Dockerfile` starts the container with:
+
+```bash
+npx drizzle-kit migrate && node src/scripts/seed-admin.js && node src/index.js
+```
+
+So on every deploy, Render automatically (1) applies all Drizzle migrations to the database, (2) creates the admin account if it does not exist (the seed is idempotent, so redeploying does not create duplicates), and (3) starts the server. No manual step is required.
+
+To run them manually (for example after changing credentials), open the web service's **Shell** tab (available on paid instances) and run:
+
+```bash
+npx drizzle-kit migrate
+npm run seed:admin
+```
+
+### Step 6: Verify the deployment
+1. Wait for the deploy log to show `Server listening on http://localhost:3000` and the service to become **Live**.
+2. Open `https://<your-service-name>.onrender.com/health` (the URL Render assigns to your service) and check that it returns `{"status":"ok"}`.
+3. Log in with `POST /api/auth/login` using `ADMIN_PHONE` and `ADMIN_PASSWORD` and check that a token is returned.
+
+### Known limitations for a public deployment
+- **Simulated OTP:** with `NODE_ENV=production` the simulated one-time code is neither logged nor exposed by `GET /api/auth/otp/:phone`, so new customer or merchant sign-up cannot be completed on a production deployment until a real SMS provider replaces `sendOtp` (see `src/services/otp.js`). The admin account created by the seed is already verified and can log in.
+- **Frontend:** only the React scaffolding exists; the customer, merchant, and admin interfaces are planned for a future version, so the deployed app exposes the API only.
+- **Free-tier behaviour:** free Render web services spin down after inactivity and free PostgreSQL databases expire after a limited period; use a paid plan for anything lasting.
 
 ---
 
