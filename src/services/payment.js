@@ -1,8 +1,8 @@
 import crypto from 'crypto';
 import bcrypt from 'bcryptjs';
-import { eq, sql } from 'drizzle-orm';
+import { eq, and, sql } from 'drizzle-orm';
 import { db } from '../db/index.js';
-import { users, wallets, transactions, paymentRequests } from '../db/schema.js';
+import { users, wallets, transactions, paymentRequests, idempotencyKeys } from '../db/schema.js';
 
 /**
  * Generate a random 6-character uppercase alphanumeric code
@@ -207,8 +207,28 @@ export async function confirmPaymentRequest({
   code,
   customerUserId,
   password,
+  idempotencyKey = null,
   _testFailureAfterBalanceUpdate = false,
 }, dbClient = db) {
+  // Idempotency check: if key provided, check if already recorded
+  if (idempotencyKey && typeof idempotencyKey === 'string' && idempotencyKey.trim() !== '') {
+    const trimmedKey = idempotencyKey.trim();
+    const [existingKey] = await dbClient
+      .select()
+      .from(idempotencyKeys)
+      .where(
+        and(
+          eq(idempotencyKeys.key, trimmedKey),
+          eq(idempotencyKeys.userId, customerUserId)
+        )
+      )
+      .limit(1);
+
+    if (existingKey) {
+      return JSON.parse(existingKey.responseBody);
+    }
+  }
+
   // Validate password input
   if (
     password === undefined ||
@@ -439,7 +459,7 @@ export async function confirmPaymentRequest({
     const newCustomerBalanceDinars = Math.floor(newCustomerBalanceCentimes / 100);
     const paymentAmountDinars = Math.floor(paymentAmountCentimes / 100);
 
-    return {
+    const result = {
       message: 'Payment confirmed successfully',
       code: lockedRequest.code,
       amountDinars: paymentAmountDinars,
@@ -461,5 +481,24 @@ export async function confirmPaymentRequest({
             : new Date(createdTx.createdAt).toISOString(),
       },
     };
+
+    if (idempotencyKey && typeof idempotencyKey === 'string' && idempotencyKey.trim() !== '') {
+      const trimmedKey = idempotencyKey.trim();
+      try {
+        await tx.insert(idempotencyKeys).values({
+          key: trimmedKey,
+          userId: customerUserId,
+          statusCode: 200,
+          responseBody: JSON.stringify(result),
+        });
+      } catch (err) {
+        // If unique violation occurs concurrently, it's safe
+        if (err.code !== '23505') {
+          throw err;
+        }
+      }
+    }
+
+    return result;
   });
 }

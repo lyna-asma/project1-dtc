@@ -79,4 +79,16 @@ export const paymentRequests = pgTable(
   ]
 );
 
+export const idempotencyKeys = pgTable('idempotency_keys', {
+  id: serial('id').primaryKey(),
+  key: text('key').notNull().unique(),
+  userId: integer('user_id')
+    .notNull()
+    .references(() => users.id),
+  statusCode: integer('status_code').notNull(),
+  responseBody: text('response_body').notNull(),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+});
+
+
 
