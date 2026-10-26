@@ -9,7 +9,8 @@
     "build": "vite build",
     "preview": "vite preview",
     "start": "node src/index.js",
-    "test": "vitest run",
+    "test": "vitest run --no-file-parallelism",
+    "seed:admin": "node src/scripts/seed-admin.js",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "drizzle-kit migrate"
   },

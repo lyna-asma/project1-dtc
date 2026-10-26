@@ -4,6 +4,7 @@ import { eq, desc } from 'drizzle-orm';
 import { db } from '../db/index.js';
 import { users, otpCodes, wallets } from '../db/schema.js';
 import { createOtp, getLatestOtp } from '../services/otp.js';
+import { generateToken } from '../middleware/auth.js';
 
 const router = Router();
 
@@ -234,4 +235,63 @@ router.post('/verify-otp', async (req, res) => {
   }
 });
 
+/**
+ * POST /api/auth/login
+ * Submitting valid credentials for a verified user (phone, password) returns HTTP 200 with { token, user: { id, phone, name, role } }.
+ */
+router.post('/login', async (req, res) => {
+  try {
+    const { phone, password } = req.body;
+
+    if (!phone || !password) {
+      return res.status(400).json({ error: 'Phone and password are required' });
+    }
+
+    const trimmedPhone = String(phone).trim();
+    if (!trimmedPhone) {
+      return res.status(400).json({ error: 'Phone and password are required' });
+    }
+
+    const [user] = await db
+      .select()
+      .from(users)
+      .where(eq(users.phone, trimmedPhone))
+      .limit(1);
+
+    if (!user) {
+      return res.status(401).json({ error: 'Invalid phone or password' });
+    }
+
+    const isPasswordValid = await bcrypt.compare(String(password), user.passwordHash);
+    if (!isPasswordValid) {
+      return res.status(401).json({ error: 'Invalid phone or password' });
+    }
+
+    if (!user.isVerified) {
+      return res.status(403).json({ error: 'Account is not verified. Please verify your phone number.' });
+    }
+
+    const token = generateToken({
+      id: user.id,
+      phone: user.phone,
+      name: user.name,
+      role: user.role,
+    });
+
+    return res.status(200).json({
+      token,
+      user: {
+        id: user.id,
+        phone: user.phone,
+        name: user.name,
+        role: user.role,
+      },
+    });
+  } catch (error) {
+    console.error('Login error:', error);
+    return res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
 export default router;
+
