@@ -290,3 +290,265 @@ export async function adminLoadShopBalance({
   });
 }
 
+/**
+ * Top up a customer's wallet from merchant shop balance inside an atomic database transaction
+ */
+export async function merchantTopUp({
+  merchantUserId,
+  customerPhone,
+  amountDinars,
+  amount,
+  body,
+  _testFailureAfterBalanceUpdate = false,
+}, dbClient = db) {
+  const payload = body || {};
+
+  // Extract customerPhone input
+  const phoneInput =
+    customerPhone !== undefined
+      ? customerPhone
+      : Object.prototype.hasOwnProperty.call(payload, 'customerPhone')
+        ? payload.customerPhone
+        : undefined;
+
+  if (
+    phoneInput === undefined ||
+    phoneInput === null ||
+    (typeof phoneInput === 'string' && phoneInput.trim() === '')
+  ) {
+    const err = new Error('customerPhone is required');
+    err.statusCode = 400;
+    throw err;
+  }
+
+  if (typeof phoneInput !== 'string') {
+    const err = new Error('Invalid customer phone number');
+    err.statusCode = 400;
+    throw err;
+  }
+
+  const trimmedCustomerPhone = phoneInput.trim();
+
+  // Extract amount input
+  const hasAmountDinars =
+    amountDinars !== undefined ||
+    (Object.prototype.hasOwnProperty.call(payload, 'amountDinars') && payload.amountDinars !== undefined);
+
+  const hasAmount =
+    amount !== undefined ||
+    (Object.prototype.hasOwnProperty.call(payload, 'amount') && payload.amount !== undefined);
+
+  if (!hasAmountDinars && !hasAmount) {
+    const err = new Error('amountDinars is required');
+    err.statusCode = 400;
+    throw err;
+  }
+
+  const rawAmount = hasAmountDinars
+    ? amountDinars !== undefined
+      ? amountDinars
+      : payload.amountDinars
+    : amount !== undefined
+      ? amount
+      : payload.amount;
+
+  if (
+    typeof rawAmount !== 'number' ||
+    !Number.isFinite(rawAmount) ||
+    !Number.isInteger(rawAmount) ||
+    rawAmount <= 0
+  ) {
+    const err = new Error('Amount must be a positive integer');
+    err.statusCode = 400;
+    throw err;
+  }
+
+  if (rawAmount > Number.MAX_SAFE_INTEGER) {
+    const err = new Error('Amount exceeds maximum allowed value');
+    err.statusCode = 400;
+    throw err;
+  }
+
+  const finalAmountDinars = rawAmount;
+  const finalAmountCentimes = finalAmountDinars * 100;
+
+  return await dbClient.transaction(async (tx) => {
+    // 1. Merchant user lookup & role check
+    const [merchantUser] = await tx
+      .select()
+      .from(users)
+      .where(eq(users.id, merchantUserId))
+      .limit(1);
+
+    if (!merchantUser) {
+      const err = new Error('Merchant not found');
+      err.statusCode = 404;
+      throw err;
+    }
+
+    if (merchantUser.role !== 'merchant') {
+      const err = new Error('Insufficient permissions');
+      err.statusCode = 403;
+      throw err;
+    }
+
+    // 2. Reject self top-up (merchant's own phone)
+    if (merchantUser.phone === trimmedCustomerPhone) {
+      const err = new Error('Cannot top up your own shop');
+      err.statusCode = 400;
+      throw err;
+    }
+
+    // 3. Customer user lookup
+    const [customerUser] = await tx
+      .select()
+      .from(users)
+      .where(eq(users.phone, trimmedCustomerPhone))
+      .limit(1);
+
+    if (!customerUser) {
+      const err = new Error('Customer not found');
+      err.statusCode = 404;
+      throw err;
+    }
+
+    // Reject self top-up if customer ID matches merchant ID
+    if (customerUser.id === merchantUser.id) {
+      const err = new Error('Cannot top up your own shop');
+      err.statusCode = 400;
+      throw err;
+    }
+
+    if (!customerUser.isVerified) {
+      const err = new Error('Customer account is not verified');
+      err.statusCode = 400;
+      throw err;
+    }
+
+    if (customerUser.role !== 'customer') {
+      const err = new Error('Target user is not a customer');
+      err.statusCode = 400;
+      throw err;
+    }
+
+    // 4. Ensure merchant wallet exists (initial balance 0)
+    let [merchantWallet] = await tx
+      .select()
+      .from(wallets)
+      .where(eq(wallets.userId, merchantUser.id))
+      .limit(1);
+
+    if (!merchantWallet) {
+      [merchantWallet] = await tx
+        .insert(wallets)
+        .values({
+          userId: merchantUser.id,
+          balance: 0,
+        })
+        .returning();
+    }
+
+    // 5. Ensure customer wallet exists (initial balance 0)
+    let [customerWallet] = await tx
+      .select()
+      .from(wallets)
+      .where(eq(wallets.userId, customerUser.id))
+      .limit(1);
+
+    if (!customerWallet) {
+      [customerWallet] = await tx
+        .insert(wallets)
+        .values({
+          userId: customerUser.id,
+          balance: 0,
+        })
+        .returning();
+    }
+
+    // 6. Deterministic row-level lock ordering: lower wallet ID first
+    const walletIdsInOrder = [merchantWallet.id, customerWallet.id].sort((a, b) => a - b);
+    const lockedWalletsMap = new Map();
+    for (const wid of walletIdsInOrder) {
+      const [locked] = await tx
+        .select()
+        .from(wallets)
+        .where(eq(wallets.id, wid))
+        .for('update');
+      lockedWalletsMap.set(wid, locked);
+    }
+
+    const lockedMerchantWallet = lockedWalletsMap.get(merchantWallet.id);
+
+    // 7. Check shop balance sufficiency
+    const currentShopBalance = Number(lockedMerchantWallet.balance);
+    if (currentShopBalance < finalAmountCentimes) {
+      const err = new Error('Insufficient shop balance');
+      err.statusCode = 400;
+      throw err;
+    }
+
+    // 8. Deduct shop balance and credit customer balance using integer centimes
+    const [updatedShopWallet] = await tx
+      .update(wallets)
+      .set({
+        balance: sql`${wallets.balance} - ${finalAmountCentimes}`,
+      })
+      .where(eq(wallets.id, merchantWallet.id))
+      .returning();
+
+    const [updatedCustomerWallet] = await tx
+      .update(wallets)
+      .set({
+        balance: sql`${wallets.balance} + ${finalAmountCentimes}`,
+      })
+      .where(eq(wallets.id, customerWallet.id))
+      .returning();
+
+    // Hook to test transaction rollback
+    if (_testFailureAfterBalanceUpdate) {
+      throw new Error('Simulated failure after balance update');
+    }
+
+    // 9. Append-only ledger record in transactions
+    const [createdTx] = await tx
+      .insert(transactions)
+      .values({
+        type: 'top_up',
+        fromWalletId: merchantWallet.id,
+        toWalletId: customerWallet.id,
+        amount: finalAmountCentimes,
+        feeAmount: 0,
+        status: 'completed',
+        description: 'Cash top-up from shop',
+      })
+      .returning();
+
+    const newShopBalanceCentimes = Number(updatedShopWallet.balance);
+    const newShopBalanceDinars = Math.floor(newShopBalanceCentimes / 100);
+
+    return {
+      message: 'Top-up successful',
+      amountDinars: finalAmountDinars,
+      amountCentimes: finalAmountCentimes,
+      newShopBalanceDinars,
+      newShopBalanceCentimes,
+      customerPhone: customerUser.phone,
+      customerName: customerUser.name,
+      transaction: {
+        id: createdTx.id,
+        type: createdTx.type,
+        amountDinars: finalAmountDinars,
+        amountCentimes: finalAmountCentimes,
+        fromWalletId: createdTx.fromWalletId,
+        toWalletId: createdTx.toWalletId,
+        status: createdTx.status,
+        createdAt:
+          createdTx.createdAt instanceof Date
+            ? createdTx.createdAt.toISOString()
+            : new Date(createdTx.createdAt).toISOString(),
+      },
+    };
+  });
+}
+
+
