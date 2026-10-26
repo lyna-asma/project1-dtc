@@ -35,3 +35,27 @@ export const wallets = pgTable(
     check('balance_non_negative', sql`${table.balance} >= 0`),
   ]
 );
+
+export const transactions = pgTable(
+  'transactions',
+  {
+    id: serial('id').primaryKey(),
+    type: text('type', {
+      enum: ['admin_load', 'top_up', 'payment', 'transfer', 'reversal'],
+    }).notNull(),
+    fromWalletId: integer('from_wallet_id').references(() => wallets.id),
+    toWalletId: integer('to_wallet_id').references(() => wallets.id),
+    amount: bigint('amount', { mode: 'number' }).notNull(),
+    feeAmount: bigint('fee_amount', { mode: 'number' }).notNull().default(0),
+    status: text('status', {
+      enum: ['completed', 'reversed'],
+    }).notNull().default('completed'),
+    referenceId: integer('reference_id'),
+    description: text('description'),
+    createdAt: timestamp('created_at').defaultNow().notNull(),
+  },
+  (table) => [
+    check('amount_positive', sql`${table.amount} > 0`),
+  ]
+);
+
