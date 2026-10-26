@@ -16,6 +16,22 @@ services:
       timeout: 5s
       retries: 5
 
+  app:
+    build: .
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      - "${PORT:-3000}:3000"
+    environment:
+      NODE_ENV: production
+      PORT: 3000
+      DATABASE_URL: postgres://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@db:5432/${POSTGRES_DB:-wallet_db}
+      JWT_SECRET: ${JWT_SECRET:-docker-jwt-secret-key-change-in-production}
+      ADMIN_PHONE: ${ADMIN_PHONE:-0555000000}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-Admin1234!}
+      ADMIN_NAME: ${ADMIN_NAME:-Platform Admin}
+
 volumes:
   pgdata:
-
