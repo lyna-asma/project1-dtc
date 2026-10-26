@@ -59,3 +59,24 @@ export const transactions = pgTable(
   ]
 );
 
+export const paymentRequests = pgTable(
+  'payment_requests',
+  {
+    id: serial('id').primaryKey(),
+    code: text('code').notNull().unique(),
+    merchantId: integer('merchant_id')
+      .notNull()
+      .references(() => users.id),
+    amount: bigint('amount', { mode: 'number' }).notNull(),
+    status: text('status', {
+      enum: ['pending', 'completed', 'expired'],
+    }).notNull().default('pending'),
+    expiresAt: timestamp('expires_at').notNull(),
+    createdAt: timestamp('created_at').defaultNow().notNull(),
+  },
+  (table) => [
+    check('payment_request_amount_positive', sql`${table.amount} > 0`),
+  ]
+);
+
+
