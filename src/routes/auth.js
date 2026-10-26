@@ -3,7 +3,7 @@ import bcrypt from 'bcryptjs';
 import { eq, desc } from 'drizzle-orm';
 import { db } from '../db/index.js';
 import { users, otpCodes, wallets } from '../db/schema.js';
-import { createOtp, getLatestOtp } from '../services/otp.js';
+import { createOtp, getLatestOtp, isOtpExposed } from '../services/otp.js';
 import { generateToken } from '../middleware/auth.js';
 
 const router = Router();
@@ -118,25 +118,27 @@ router.post('/register', async (req, res) => {
  * GET /api/auth/otp/:phone
  * Dev/test helper endpoint to retrieve the latest simulated OTP code (Rule R7)
  */
-if (process.env.NODE_ENV !== 'production') {
-  router.get('/otp/:phone', async (req, res) => {
-    try {
-      const latest = await getLatestOtp(req.params.phone);
-      if (!latest) {
-        return res.status(404).json({ error: 'No OTP found for this phone number' });
-      }
-      return res.status(200).json({
-        phone: latest.phone,
-        code: latest.code,
-        expiresAt: latest.expiresAt,
-        used: latest.used,
-      });
-    } catch (error) {
-      console.error('OTP query error:', error);
-      return res.status(500).json({ error: 'Internal server error' });
+router.get('/otp/:phone', async (req, res) => {
+  // Disabled in production unless DEMO_MODE=true (demo app with fake money)
+  if (!isOtpExposed()) {
+    return res.status(404).json({ error: 'Not found' });
+  }
+  try {
+    const latest = await getLatestOtp(req.params.phone);
+    if (!latest) {
+      return res.status(404).json({ error: 'No OTP found for this phone number' });
     }
-  });
-}
+    return res.status(200).json({
+      phone: latest.phone,
+      code: latest.code,
+      expiresAt: latest.expiresAt,
+      used: latest.used,
+    });
+  } catch (error) {
+    console.error('OTP query error:', error);
+    return res.status(500).json({ error: 'Internal server error' });
+  }
+});
 
 /**
  * POST /api/auth/verify-otp

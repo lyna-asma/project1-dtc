@@ -7,8 +7,15 @@ import { eq, desc } from 'drizzle-orm';
  * Keep one-time code sending behind a single replaceable function
  * that logs/exposes codes for local review and automated tests without sending real SMS.
  */
+/**
+ * The simulated OTP is logged and readable via GET /api/auth/otp/:phone
+ * outside production, or in production when DEMO_MODE=true (demo, fake money).
+ */
+export const isOtpExposed = () =>
+  process.env.NODE_ENV !== 'production' || process.env.DEMO_MODE === 'true';
+
 export const sendOtp = async ({ phone, code }) => {
-  if (process.env.NODE_ENV !== 'production') {
+  if (isOtpExposed()) {
     console.log(`[OTP SIMULATOR] Phone: ${phone}, Code: ${code}`);
   }
   // Pluggable: integrate SMS provider here when required

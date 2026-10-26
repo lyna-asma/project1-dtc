@@ -184,7 +184,36 @@ npm run dev
 - Seeded via `npm run seed:admin` (or automatically during Docker container startup), creating the initial admin user with phone `0555000000`, password `Admin1234!`, role `admin`, and an initialized wallet. Repeated execution is idempotent.
 
 ### Where to See the Simulated One-Time Code
-- When a customer or merchant registers via `POST /api/auth/register` and `NODE_ENV` is not `production`, the 6-digit OTP code is logged directly to stdout (`[OTP SIMULATOR] Phone: ..., Code: ...`) and exposed via `GET /api/auth/otp/:phone`. In `NODE_ENV=production` (which the Docker Compose `app` service sets) the code is neither logged nor exposed, so sign-up can only be completed in development/test mode. The `docker compose up --build` stack therefore serves the API and seeded admin login, but not new sign-ups.
+The simulated code is shown when `NODE_ENV` is not `production`, **or** when `DEMO_MODE=true` (off by default in the code). The Docker Compose `app` service sets `DEMO_MODE=true` (override with `DEMO_MODE=false docker compose up --build` to hide it), because this is a demo with fake money and reviewers must be able to sign up customers and merchants. When enabled there are two ways to read the code after `POST /api/auth/register`:
+
+1. **Container logs:** `docker compose logs app` (add `-f` to follow) and look for `[OTP SIMULATOR] Phone: <phone>, Code: <code>`.
+2. **HTTP endpoint:** `GET /api/auth/otp/<phone>` returns `{ "phone", "code", "expiresAt", "used" }`.
+
+When disabled (production without `DEMO_MODE=true`) the code is neither logged nor returned (the endpoint answers 404), so sign-up cannot be completed until a real SMS provider replaces `sendOtp` in `src/services/otp.js`.
+
+### Reviewer Walk-Through (Docker Compose)
+```bash
+# 1. Start the stack (PostgreSQL, migrations, admin seed, API on port 3000)
+docker compose up --build -d
+curl http://localhost:3000/health
+
+# 2. Log in as the seeded admin (phone 0555000000, password Admin1234!)
+curl -X POST http://localhost:3000/api/auth/login -H "Content-Type: application/json" -d '{"phone":"0555000000","password":"Admin1234!"}'
+
+# 3. Sign up a merchant, read the code, verify
+curl -X POST http://localhost:3000/api/auth/register -H "Content-Type: application/json" -d '{"phone":"0550987654","name":"Shop A","password":"secret123","role":"merchant"}'
+curl http://localhost:3000/api/auth/otp/0550987654
+curl -X POST http://localhost:3000/api/auth/verify-otp -H "Content-Type: application/json" -d '{"phone":"0550987654","code":"<CODE>"}'
+
+# 4. Sign up a customer, read the code, verify
+curl -X POST http://localhost:3000/api/auth/register -H "Content-Type: application/json" -d '{"phone":"0550123456","name":"Customer 1","password":"secret123","role":"customer"}'
+curl http://localhost:3000/api/auth/otp/0550123456
+curl -X POST http://localhost:3000/api/auth/verify-otp -H "Content-Type: application/json" -d '{"phone":"0550123456","code":"<CODE>"}'
+
+# 5. Confirm the codes are also in the container logs
+docker compose logs app | grep "OTP SIMULATOR"
+```
+(On Windows PowerShell use `curl.exe` instead of `curl`, and single-quote JSON as shown or use `Invoke-RestMethod`.)
 
 ---
 
@@ -322,6 +351,7 @@ In the web service's **Environment** tab add:
 | :--- | :--- |
 | `NODE_ENV` | `production` (serves the built frontend from `dist/`) |
 | `PORT` | `3000` (the port the `Dockerfile` exposes) |
+| `DEMO_MODE` | `true` to log the simulated OTP and expose `GET /api/auth/otp/:phone` in production (demo only; off by default) |
 | `DATABASE_URL` | The **Internal Database URL** copied in Step 2 |
 | `JWT_SECRET` | A long random secret (do not reuse the development default) |
 | `ADMIN_PHONE` | Phone number of the initial admin account (default `0555000000`) |
@@ -350,7 +380,7 @@ npm run seed:admin
 3. Log in with `POST /api/auth/login` using `ADMIN_PHONE` and `ADMIN_PASSWORD` and check that a token is returned.
 
 ### Known limitations for a public deployment
-- **Simulated OTP:** with `NODE_ENV=production` the simulated one-time code is neither logged nor exposed by `GET /api/auth/otp/:phone`, so new customer or merchant sign-up cannot be completed on a production deployment until a real SMS provider replaces `sendOtp` (see `src/services/otp.js`). The admin account created by the seed is already verified and can log in.
+- **Simulated OTP:** with `NODE_ENV=production` the simulated one-time code is hidden unless `DEMO_MODE=true` is also set. For a demo deployment with fake money, set `DEMO_MODE=true` (see the environment variable table) and read codes in the Render **Logs** tab (`[OTP SIMULATOR] Phone: ..., Code: ...`) or via `GET /api/auth/otp/<phone>`. Without it, new customer or merchant sign-up cannot be completed until a real SMS provider replaces `sendOtp` (see `src/services/otp.js`). The admin account created by the seed is already verified and can log in either way. Because the code is publicly readable, never enable `DEMO_MODE` for anything but fake-money demos.
 - **Frontend:** only the React scaffolding exists; the customer, merchant, and admin interfaces are planned for a future version, so the deployed app exposes the API only.
 - **Free-tier behaviour:** free Render web services spin down after inactivity and free PostgreSQL databases expire after a limited period; use a paid plan for anything lasting.
 
