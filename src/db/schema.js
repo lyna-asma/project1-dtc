@@ -1,4 +1,4 @@
-import { pgTable, serial, text, timestamp, boolean, bigint, integer, check } from 'drizzle-orm/pg-core';
+import { pgTable, serial, text, timestamp, boolean, bigint, integer, check, unique } from 'drizzle-orm/pg-core';
 import { sql } from 'drizzle-orm';
 
 export const users = pgTable('users', {
@@ -79,16 +79,28 @@ export const paymentRequests = pgTable(
   ]
 );
 
-export const idempotencyKeys = pgTable('idempotency_keys', {
-  id: serial('id').primaryKey(),
-  key: text('key').notNull().unique(),
-  userId: integer('user_id')
-    .notNull()
-    .references(() => users.id),
-  statusCode: integer('status_code').notNull(),
-  responseBody: text('response_body').notNull(),
-  createdAt: timestamp('created_at').defaultNow().notNull(),
-});
+export const idempotencyKeys = pgTable(
+  'idempotency_keys',
+  {
+    id: serial('id').primaryKey(),
+    key: text('key').notNull(),
+    userId: integer('user_id')
+      .notNull()
+      .references(() => users.id),
+    endpoint: text('endpoint').notNull(),
+    requestHash: text('request_hash').notNull(),
+    statusCode: integer('status_code').notNull(),
+    responseBody: text('response_body').notNull(),
+    createdAt: timestamp('created_at').defaultNow().notNull(),
+  },
+  (table) => [
+    unique('idempotency_keys_user_endpoint_key_unique').on(
+      table.userId,
+      table.endpoint,
+      table.key
+    ),
+  ]
+);
 
 
 

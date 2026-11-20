@@ -64,10 +64,14 @@ router.post('/payment-requests/:code/confirm', async (req, res) => {
     const { code } = req.params;
     const { password, _testFailureAfterBalanceUpdate } = req.body || {};
     const idempotencyKey =
-      req.headers['idempotency-key'] ||
-      req.headers['x-idempotency-key'] ||
-      req.body?.idempotencyKey ||
-      req.body?.requestId ||
+      (typeof req.headers['idempotency-key'] === 'string' && req.headers['idempotency-key'].trim() !== ''
+        ? req.headers['idempotency-key']
+        : null) ??
+      (typeof req.headers['x-idempotency-key'] === 'string' && req.headers['x-idempotency-key'].trim() !== ''
+        ? req.headers['x-idempotency-key']
+        : null) ??
+      req.body?.idempotencyKey ??
+      req.body?.requestId ??
       null;
 
     const result = await confirmPaymentRequest({
@@ -75,6 +79,7 @@ router.post('/payment-requests/:code/confirm', async (req, res) => {
       customerUserId: req.user.id,
       password,
       idempotencyKey,
+      endpoint: 'POST /api/customer/payment-requests/:code/confirm',
       _testFailureAfterBalanceUpdate:
         process.env.NODE_ENV !== 'production'
           ? Boolean(_testFailureAfterBalanceUpdate)

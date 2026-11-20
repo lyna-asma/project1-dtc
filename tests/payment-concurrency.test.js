@@ -7,7 +7,7 @@ import { db, pool } from '../src/db/index.js';
 import { users, wallets, transactions, otpCodes, paymentRequests, idempotencyKeys } from '../src/db/schema.js';
 import { generateToken } from '../src/middleware/auth.js';
 import { adminLoadShopBalance, merchantTopUp } from '../src/services/wallet.js';
-import { createPaymentRequest } from '../src/services/payment.js';
+import { createPaymentRequest, confirmPaymentRequest } from '../src/services/payment.js';
 
 describe('Task 9: Payment Idempotency & Concurrency Safety', () => {
   const cleanDb = async () => {
@@ -293,6 +293,307 @@ describe('Task 9: Payment Idempotency & Concurrency Safety', () => {
 
     // Sum of all balances must exactly equal total admin loaded
     expect(platformTotalCentimes).toBe(totalAdminLoadedCentimes);
+  });
+
+  describe('Task 16: Scoped Idempotency, Payload Mismatch, Auth-Before-Replay & Advisory Lock Race', () => {
+    async function setupToppedUpCustomers() {
+      const merchant = await createVerifiedUser({
+        name: 'Task16 Merchant',
+        phone: '0556100001',
+        role: 'merchant',
+      });
+      const customerA = await createVerifiedUser({
+        name: 'Customer Alpha',
+        phone: '0556200001',
+        role: 'customer',
+        password: 'AlphaPassword123!',
+      });
+      const customerB = await createVerifiedUser({
+        name: 'Customer Beta',
+        phone: '0556200002',
+        role: 'customer',
+        password: 'BetaPassword123!',
+      });
+
+      await adminLoadShopBalance({
+        merchantId: merchant.user.id,
+        amountDinars: 50000,
+      });
+
+      await merchantTopUp({
+        merchantUserId: merchant.user.id,
+        customerPhone: customerA.user.phone,
+        amountDinars: 10000,
+      });
+
+      await merchantTopUp({
+        merchantUserId: merchant.user.id,
+        customerPhone: customerB.user.phone,
+        amountDinars: 10000,
+      });
+
+      return { merchant, customerA, customerB };
+    }
+
+    it('allows identical Idempotency-Key across two different users without collision', async () => {
+      const { merchant, customerA, customerB } = await setupToppedUpCustomers();
+
+      const reqA = await createPaymentRequest({ merchantId: merchant.user.id, amountDinars: 2000 });
+      const reqB = await createPaymentRequest({ merchantId: merchant.user.id, amountDinars: 3000 });
+
+      const [resA, resB] = await Promise.all([
+        request(app)
+          .post(`/api/customer/payment-requests/${reqA.code}/confirm`)
+          .set('Authorization', `Bearer ${customerA.token}`)
+          .set('Idempotency-Key', 'shared-key-1')
+          .send({ password: customerA.password }),
+        request(app)
+          .post(`/api/customer/payment-requests/${reqB.code}/confirm`)
+          .set('Authorization', `Bearer ${customerB.token}`)
+          .set('Idempotency-Key', 'shared-key-1')
+          .send({ password: customerB.password }),
+      ]);
+
+      expect(resA.status).toBe(200);
+      expect(resB.status).toBe(200);
+      expect(resA.body.amountDinars).toBe(2000);
+      expect(resB.body.amountDinars).toBe(3000);
+      expect(resA.body.newCustomerBalanceDinars).toBe(8000);
+      expect(resB.body.newCustomerBalanceDinars).toBe(7000);
+      expect(resA.body.transaction.id).not.toBe(resB.body.transaction.id);
+
+      const savedKeys = await db.select().from(idempotencyKeys);
+      expect(savedKeys).toHaveLength(2);
+    });
+
+    it('isolates idempotency keys per endpoint for the same customer', async () => {
+      const { merchant, customerA } = await setupToppedUpCustomers();
+
+      const req1 = await createPaymentRequest({ merchantId: merchant.user.id, amountDinars: 1200 });
+      const req2 = await createPaymentRequest({ merchantId: merchant.user.id, amountDinars: 1800 });
+
+      const result1 = await confirmPaymentRequest({
+        code: req1.code,
+        customerUserId: customerA.user.id,
+        password: customerA.password,
+        idempotencyKey: 'cross-endpoint-key-1',
+        endpoint: 'POST /api/customer/payment-requests/:code/confirm',
+      });
+
+      const result2 = await confirmPaymentRequest({
+        code: req2.code,
+        customerUserId: customerA.user.id,
+        password: customerA.password,
+        idempotencyKey: 'cross-endpoint-key-1',
+        endpoint: 'POST /api/v2/checkout/confirm',
+      });
+
+      expect(result1.amountDinars).toBe(1200);
+      expect(result2.amountDinars).toBe(1800);
+      expect(result1.transaction.id).not.toBe(result2.transaction.id);
+      expect(result2.newCustomerBalanceDinars).toBe(7000);
+
+      const savedKeys = await db.select().from(idempotencyKeys);
+      expect(savedKeys).toHaveLength(2);
+    });
+
+    it('rejects wrong password with 401 BEFORE returning any cached idempotency replay', async () => {
+      const { merchant, customerA } = await setupToppedUpCustomers();
+      const payReq = await createPaymentRequest({ merchantId: merchant.user.id, amountDinars: 2500 });
+
+      const firstRes = await request(app)
+        .post(`/api/customer/payment-requests/${payReq.code}/confirm`)
+        .set('Authorization', `Bearer ${customerA.token}`)
+        .set('Idempotency-Key', 'pw-before-replay-1')
+        .send({ password: customerA.password });
+
+      expect(firstRes.status).toBe(200);
+
+      const badPwRetry = await request(app)
+        .post(`/api/customer/payment-requests/${payReq.code}/confirm`)
+        .set('Authorization', `Bearer ${customerA.token}`)
+        .set('Idempotency-Key', 'pw-before-replay-1')
+        .send({ password: 'WrongPassword999!' });
+
+      expect(badPwRetry.status).toBe(401);
+      expect(badPwRetry.body).toEqual({ error: 'Invalid password' });
+
+      const validRetry = await request(app)
+        .post(`/api/customer/payment-requests/${payReq.code}/confirm`)
+        .set('Authorization', `Bearer ${customerA.token}`)
+        .set('Idempotency-Key', 'pw-before-replay-1')
+        .send({ password: customerA.password });
+
+      expect(validRetry.status).toBe(200);
+      expect(validRetry.body.transaction.id).toBe(firstRes.body.transaction.id);
+    });
+
+    it('rejects payload mismatch with 409 when same Idempotency-Key is reused for a different code', async () => {
+      const { merchant, customerA } = await setupToppedUpCustomers();
+      const req1 = await createPaymentRequest({ merchantId: merchant.user.id, amountDinars: 1500 });
+      const req2 = await createPaymentRequest({ merchantId: merchant.user.id, amountDinars: 2000 });
+
+      const okRes = await request(app)
+        .post(`/api/customer/payment-requests/${req1.code}/confirm`)
+        .set('Authorization', `Bearer ${customerA.token}`)
+        .set('Idempotency-Key', 'payload-mismatch-1')
+        .send({ password: customerA.password });
+
+      expect(okRes.status).toBe(200);
+
+      // Reusing same key for another valid code -> 409
+      const mismatchValidCode = await request(app)
+        .post(`/api/customer/payment-requests/${req2.code}/confirm`)
+        .set('Authorization', `Bearer ${customerA.token}`)
+        .set('Idempotency-Key', 'payload-mismatch-1')
+        .send({ password: customerA.password });
+
+      expect(mismatchValidCode.status).toBe(409);
+      expect(mismatchValidCode.body.error).toMatch(/different request parameters/i);
+
+      // Reusing same key for a non-existent code -> still 409
+      const mismatchMissingCode = await request(app)
+        .post('/api/customer/payment-requests/NOPE99/confirm')
+        .set('Authorization', `Bearer ${customerA.token}`)
+        .set('Idempotency-Key', 'payload-mismatch-1')
+        .send({ password: customerA.password });
+
+      expect(mismatchMissingCode.status).toBe(409);
+
+      // req2 must remain untouched and pending
+      const [dbReq2] = await db
+        .select()
+        .from(paymentRequests)
+        .where(eq(paymentRequests.code, req2.code));
+      expect(dbReq2.status).toBe('pending');
+    });
+
+    it('serializes concurrent identical-key Promise.all confirmations so wallet is debited once', async () => {
+      const { merchant, customerA } = await setupToppedUpCustomers();
+      const payReq = await createPaymentRequest({ merchantId: merchant.user.id, amountDinars: 4000 });
+
+      const [res1, res2] = await Promise.all([
+        request(app)
+          .post(`/api/customer/payment-requests/${payReq.code}/confirm`)
+          .set('Authorization', `Bearer ${customerA.token}`)
+          .set('Idempotency-Key', 'concurrent-race-key-1')
+          .send({ password: customerA.password }),
+        request(app)
+          .post(`/api/customer/payment-requests/${payReq.code}/confirm`)
+          .set('Authorization', `Bearer ${customerA.token}`)
+          .set('Idempotency-Key', 'concurrent-race-key-1')
+          .send({ password: customerA.password }),
+      ]);
+
+      expect(res1.status).toBe(200);
+      expect(res2.status).toBe(200);
+      expect(res2.body.transaction.id).toBe(res1.body.transaction.id);
+      expect(res2.body.newCustomerBalanceCentimes).toBe(600000);
+
+      const [custWallet] = await db
+        .select()
+        .from(wallets)
+        .where(eq(wallets.userId, customerA.user.id));
+      expect(Number(custWallet.balance)).toBe(600000);
+
+      const paymentTxs = await db
+        .select()
+        .from(transactions)
+        .where(eq(transactions.type, 'payment'));
+      expect(paymentTxs).toHaveLength(1);
+
+      const savedKeys = await db.select().from(idempotencyKeys);
+      expect(savedKeys).toHaveLength(1);
+    });
+
+    it('leaves idempotency_keys clean on _testFailureAfterBalanceUpdate rollback so retry succeeds', async () => {
+      const { merchant, customerA } = await setupToppedUpCustomers();
+      const payReq = await createPaymentRequest({ merchantId: merchant.user.id, amountDinars: 3000 });
+
+      const failedRes = await request(app)
+        .post(`/api/customer/payment-requests/${payReq.code}/confirm`)
+        .set('Authorization', `Bearer ${customerA.token}`)
+        .set('Idempotency-Key', 'rollback-retry-key-1')
+        .send({
+          password: customerA.password,
+          _testFailureAfterBalanceUpdate: true,
+        });
+
+      expect(failedRes.status).toBe(500);
+      expect(await db.select().from(idempotencyKeys)).toHaveLength(0);
+
+      const [dbReqBeforeRetry] = await db
+        .select()
+        .from(paymentRequests)
+        .where(eq(paymentRequests.code, payReq.code));
+      expect(dbReqBeforeRetry.status).toBe('pending');
+
+      const retryRes = await request(app)
+        .post(`/api/customer/payment-requests/${payReq.code}/confirm`)
+        .set('Authorization', `Bearer ${customerA.token}`)
+        .set('Idempotency-Key', 'rollback-retry-key-1')
+        .send({ password: customerA.password });
+
+      expect(retryRes.status).toBe(200);
+      expect(retryRes.body.newCustomerBalanceDinars).toBe(7000);
+      expect(await db.select().from(idempotencyKeys)).toHaveLength(1);
+    });
+
+    it('replays 200 receipt on completed idempotent retry even after expiresAt passes', async () => {
+      const { merchant, customerA } = await setupToppedUpCustomers();
+      const payReq = await createPaymentRequest({ merchantId: merchant.user.id, amountDinars: 1000 });
+
+      const firstRes = await request(app)
+        .post(`/api/customer/payment-requests/${payReq.code}/confirm`)
+        .set('Authorization', `Bearer ${customerA.token}`)
+        .set('Idempotency-Key', 'expired-after-complete-key')
+        .send({ password: customerA.password });
+
+      expect(firstRes.status).toBe(200);
+
+      // Force payment request expiration timestamp into the past
+      await db
+        .update(paymentRequests)
+        .set({ expiresAt: new Date(Date.now() - 60 * 1000) })
+        .where(eq(paymentRequests.code, payReq.code));
+
+      const lateRetry = await request(app)
+        .post(`/api/customer/payment-requests/${payReq.code}/confirm`)
+        .set('Authorization', `Bearer ${customerA.token}`)
+        .set('Idempotency-Key', 'expired-after-complete-key')
+        .send({ password: customerA.password });
+
+      expect(lateRetry.status).toBe(200);
+      expect(lateRetry.body.transaction.id).toBe(firstRes.body.transaction.id);
+
+      const [custWallet] = await db
+        .select()
+        .from(wallets)
+        .where(eq(wallets.userId, customerA.user.id));
+      expect(Number(custWallet.balance)).toBe(900000);
+    });
+
+    it('rejects oversized (> 255 chars) or non-string idempotency keys with 400', async () => {
+      const { merchant, customerA } = await setupToppedUpCustomers();
+      const payReq = await createPaymentRequest({ merchantId: merchant.user.id, amountDinars: 500 });
+
+      const longKeyRes = await request(app)
+        .post(`/api/customer/payment-requests/${payReq.code}/confirm`)
+        .set('Authorization', `Bearer ${customerA.token}`)
+        .set('Idempotency-Key', 'x'.repeat(256))
+        .send({ password: customerA.password });
+
+      expect(longKeyRes.status).toBe(400);
+      expect(longKeyRes.body).toEqual({ error: 'Invalid idempotency key' });
+
+      const nonStringRes = await request(app)
+        .post(`/api/customer/payment-requests/${payReq.code}/confirm`)
+        .set('Authorization', `Bearer ${customerA.token}`)
+        .send({ password: customerA.password, idempotencyKey: 12345 });
+
+      expect(nonStringRes.status).toBe(400);
+      expect(nonStringRes.body).toEqual({ error: 'Invalid idempotency key' });
+    });
   });
 });
 

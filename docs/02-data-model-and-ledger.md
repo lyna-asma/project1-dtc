@@ -68,8 +68,10 @@ erDiagram
 
     idempotency_keys {
         serial id PK
-        text key UK "Global unique key in v0 (scoped in Task 16)"
+        text key "Unique within (user_id, endpoint, key)"
         integer user_id FK
+        text endpoint "Target endpoint path (Task 16)"
+        text request_hash "SHA-256 request parameters hash"
         integer status_code
         text response_body "Saved JSON receipt"
         timestamp created_at
@@ -83,7 +85,7 @@ erDiagram
 ### Rule 1: Store Money as Whole Centimes (`bigint`), Never Decimals
 * **How it works:** Users enter whole Dinars (e.g., `5000` DA). The backend multiplies by `100` and persists `500000` centimes as a whole `bigint` integer.
 * **Why:** Floating-point arithmetic introduces binary rounding drift (`0.1 + 0.2 !== 0.3`). Integer centimes guarantee exact totals while supporting future fee calculations.
-* **Overflow Guard Improvement (Task 16):** Baseline `src/services/wallet.js` and `src/services/payment.js` currently validate `amountDinars <= Number.MAX_SAFE_INTEGER` before `* 100`. Under Blendinar (**Task 16**), all endpoints tighten this guard to `amountDinars <= Math.floor(Number.MAX_SAFE_INTEGER / 100)` so `dinars * 100` can never exceed `Number.MAX_SAFE_INTEGER`.
+* **Centime Overflow Guard (`MAX_SAFE_DINARS`, Task 16):** Implemented in [`src/services/validation.js`](../src/services/validation.js) and enforced across [`src/services/wallet.js`](../src/services/wallet.js) and [`src/services/payment.js`](../src/services/payment.js): rejects any `amountDinars > Math.floor(Number.MAX_SAFE_INTEGER / 100)` (`90071992547409`) with HTTP `400` before `* 100` centime conversion.
 
 ### Rule 2: Let PostgreSQL Enforce Safety (`CHECK` Constraints)
 1. `wallets`: `CHECK (balance >= 0)` — Balances can never drop below zero.
@@ -131,7 +133,7 @@ All Blendinar schema changes **must** be generated as new forward-only migration
 | **`payout_batches`** | Daily simulated CCP settlements (`prepared`, `settled`, `failed`, `reversed`, `disputed`, `delayed`) keyed cleanly by merchant + cutoff window. Already-earned `merchant_payable_balance` always settles normally even if `merchant_subscriptions` is `past_due` (never confiscated, `CHECK >= 0`). | **`Open O-08`** (cutoff timezone, threshold, trigger mode); `O-06b` (`Confirmed` payable isolation). |
 | **`refund_requests`** | Customer `0`-fee pre-departure cash refunds (`locked_refund \| scheduled_next_day_pickup \| ready_for_pickup \| paid \| cancelled \| expired \| disputed`) with `office_id`, `cash_source_type` (`office_petty_float \| admin_scheduled_funding`), self-cancel before payout, and **72-hour auto-expiry** returning funds to Spendable Balance. Walk-in petty float serves `<= 20,000 DZD` at Fixed Offices; `> 20,000 DZD` or low float schedules next-day pickup. | `O-10` (`Confirmed`), **`O-09` (`Confirmed` Hybrid Option 4)**. |
 | **`notifications` (`Proposed` UX)** | In-app notification bell/feed rows (`type`, `title`, `message`, `reference_type`, `reference_id`, `is_read`) + `DEMO_MODE` simulated email logs for top-up confirmation/shortage alerts, `O-02` Step 2 KYC decisions, checkout receipts, `O-09` refund pickup scheduling & **`ready_for_pickup` at `[Fixed Office]`**, **48h/24h pre-72h expiry reminders**, Agent `80%` cash cap warnings, **Merchant Subscription renewal reminders / `past_due` alerts (`O-06b`)**, and Admin queue badges. | **`Proposed`** UX specification (`_docs/plan.md` Section 6.10). |
-| **`idempotency_keys`** | Composite uniqueness `(user_id, endpoint, key)` + `request_hash` (Task 16), checked **after** auth/suspension/password checks. | — |
+| **`idempotency_keys`** | Composite uniqueness `(user_id, endpoint, key)` + `request_hash` (`Task 16`), checked **after** auth/password checks with in-transaction `pg_advisory_xact_lock`. | **Implemented in Task 16** (`src/db/schema.js` + `drizzle/0004_elite_titania.sql`); live suspension check follows in Task 21. |
 
 ### Target Blendinar v1 Entity-Relationship Diagram *(Planned — Pending `O-07` and `O-08` Decisions)*
 

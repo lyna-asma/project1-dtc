@@ -70,15 +70,14 @@ stateDiagram-v2
 
 ---
 
-## 4. Idempotency Keys: Verified Baseline Behavior & Task 16 Fixes
+## 4. Scoped Idempotency Keys, Auth-Before-Replay & Race Protection (`Task 16` Implemented)
 
-**Idempotency** ensures that if a client retries the exact same request (e.g., mobile network drop), the financial mutation runs **at most once** and returns the original receipt.
+**Idempotency** ensures that if a client retries the exact same request (e.g., mobile network drop), the financial mutation runs **at most once** and returns the original receipt. **Task 16** upgrades [`src/db/schema.js`](../src/db/schema.js), [`drizzle/0004_elite_titania.sql`](../drizzle/0004_elite_titania.sql), [`src/services/payment.js`](../src/services/payment.js), and [`src/routes/customer.js`](../src/routes/customer.js) with four interlocking safeguards:
 
-### Three Verified Findings in Cohort Baseline v0 (`src/db/schema.js` & `src/services/payment.js`)
-Inspecting the current baseline implementation reveals three concrete limitations that **Task 16** in [`_docs/tasks.md`](../_docs/tasks.md) explicitly fixes:
-1. **Global `key` Uniqueness Collision:** `idempotency_keys.key` in [`src/db/schema.js`](../src/db/schema.js) has a global `.unique()` index rather than composite `(user_id, endpoint, key)` scoping, so two different users sending the same generic key string collide on insert.
-2. **Pre-Transaction TOCTOU Race Window:** In `confirmPaymentRequest` ([`src/services/payment.js`](../src/services/payment.js)), the `idempotency_keys` lookup executes *before* `db.transaction(...)` starts, allowing two identical-key requests arriving at the same millisecond to race past the read check before the first inserts its key.
-3. **Idempotency Lookup Runs Before Password Check:** In `confirmPaymentRequest` today, the cached `idempotency_keys` lookup executes at the top of the function *before* `bcrypt.compare(password, ...)`. In Blendinar (**Task 16** & `R12-B`), **authentication, live account suspension check, and password verification MUST execute BEFORE returning any cached idempotent response**, and payload mismatches (`request_hash`) must be rejected (`409`/`422`).
+1. **Composite `(user_id, endpoint, key)` Scoping (`idempotency_keys_user_endpoint_key_unique`):** Replaces the Cohort v0 global `UNIQUE(key)` constraint so different users or different endpoints can safely use the same `Idempotency-Key` string without collision (trimmed keys `<= 255` characters; non-string or oversized keys return `400`).
+2. **Authentication & Password Verification Strictly Before Replay:** `confirmPaymentRequest` resolves the customer user and executes `bcrypt.compare(password, customerUser.passwordHash)` (`401 Invalid password`) **before** opening the transaction or returning any cached receipt from `idempotency_keys`.
+3. **Payload Hash Verification (`request_hash`):** Computes `SHA-256` over canonical request parameters (`{ code }`, excluding `password` and test failure hooks) and rejects mismatched reuse of an existing `(user_id, endpoint, key)` with **`409 Idempotency key already used with different request parameters`**.
+4. **In-Transaction Advisory Serialization (`pg_advisory_xact_lock`):** Inside `db.transaction`, `confirmPaymentRequest` acquires `pg_advisory_xact_lock(CAST(userId AS integer), hashtext(CAST(endpoint || ':' || key AS text)))` **before** checking `idempotency_keys`. Concurrent identical-key `Promise.all` requests serialize deterministically: the first commits the payment and inserts the receipt; the second reads the committed receipt and replays `200` with zero double-charge. Failed/rolled-back attempts (`_testFailureAfterBalanceUpdate`) leave `idempotency_keys` clean for safe retries, and completed receipts replay `200` even after the underlying payment code's `expiresAt` passes.
 
 ---
 

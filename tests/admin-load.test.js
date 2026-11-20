@@ -8,6 +8,7 @@ import { db, pool } from '../src/db/index.js';
 import { users, wallets, transactions, otpCodes } from '../src/db/schema.js';
 import { generateToken, getJwtSecret } from '../src/middleware/auth.js';
 import { adminLoadShopBalance } from '../src/services/wallet.js';
+import { MAX_SAFE_DINARS, parseWholeDinars } from '../src/services/validation.js';
 
 describe('Admin Shop Balance Loading (Issue #10)', () => {
   const cleanDb = async () => {
@@ -298,6 +299,18 @@ describe('Admin Shop Balance Loading (Issue #10)', () => {
         .post(`/api/admin/shops/${merchant.user.id}/load`)
         .set('Authorization', `Bearer ${adminToken}`)
         .send({ amountDinars: Number.MAX_SAFE_INTEGER + 1000 });
+
+      expect(res.status).toBe(400);
+      expect(res.body).toEqual({ error: 'amountDinars exceeds maximum allowed value' });
+    });
+
+    it('returns 400 when amountDinars exceeds Math.floor(Number.MAX_SAFE_INTEGER / 100) (Task 16)', async () => {
+      expect(parseWholeDinars(MAX_SAFE_DINARS)).toBe(MAX_SAFE_DINARS);
+
+      const res = await request(app)
+        .post(`/api/admin/shops/${merchant.user.id}/load`)
+        .set('Authorization', `Bearer ${adminToken}`)
+        .send({ amountDinars: MAX_SAFE_DINARS + 1 });
 
       expect(res.status).toBe(400);
       expect(res.body).toEqual({ error: 'amountDinars exceeds maximum allowed value' });

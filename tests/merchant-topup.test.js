@@ -8,6 +8,7 @@ import { db, pool } from '../src/db/index.js';
 import { users, wallets, transactions, otpCodes } from '../src/db/schema.js';
 import { generateToken, getJwtSecret } from '../src/middleware/auth.js';
 import { merchantTopUp } from '../src/services/wallet.js';
+import { MAX_SAFE_DINARS, parseWholeDinars } from '../src/services/validation.js';
 
 describe('Merchant Cash Top-Up to Customer Wallet (Issue #11)', () => {
   const cleanDb = async () => {
@@ -447,6 +448,33 @@ describe('Merchant Cash Top-Up to Customer Wallet (Issue #11)', () => {
         .send({
           customerPhone: customer.user.phone,
           amountDinars: Number.MAX_SAFE_INTEGER + 1000,
+        });
+
+      expect(res.status).toBe(400);
+      expect(res.body).toEqual({ error: 'Amount exceeds maximum allowed value' });
+    });
+
+    it('returns 400 for amount exceeding Math.floor(Number.MAX_SAFE_INTEGER / 100) (Task 16)', async () => {
+      const merchant = await createUser({
+        name: 'Shop 1',
+        phone: '0550000010',
+        role: 'merchant',
+        initialBalance: 50000,
+      });
+      const customer = await createUser({
+        name: 'Customer 1',
+        phone: '0550000030',
+        role: 'customer',
+      });
+
+      expect(parseWholeDinars(MAX_SAFE_DINARS)).toBe(MAX_SAFE_DINARS);
+
+      const res = await request(app)
+        .post('/api/merchant/top-up')
+        .set('Authorization', `Bearer ${merchant.token}`)
+        .send({
+          customerPhone: customer.user.phone,
+          amountDinars: MAX_SAFE_DINARS + 1,
         });
 
       expect(res.status).toBe(400);

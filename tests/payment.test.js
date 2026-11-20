@@ -6,6 +6,7 @@ import { app } from '../src/app.js';
 import { db, pool } from '../src/db/index.js';
 import { users, wallets, transactions, otpCodes, paymentRequests } from '../src/db/schema.js';
 import { generateToken } from '../src/middleware/auth.js';
+import { MAX_SAFE_DINARS, parseWholeDinars } from '../src/services/validation.js';
 
 describe('Merchant Payment Code Generation & Customer Confirmation (Issue #12)', () => {
   const cleanDb = async () => {
@@ -219,6 +220,24 @@ describe('Merchant Payment Code Generation & Customer Confirmation (Issue #12)',
         .send({ amountDinars: Number.MAX_SAFE_INTEGER + 1000 });
 
       expect(res.status).toBe(400);
+    });
+
+    it('rejects amountDinars exceeding Math.floor(Number.MAX_SAFE_INTEGER / 100) before centime conversion (Task 16)', async () => {
+      const merchant = await createUser({
+        name: 'Grocery Shop',
+        phone: '0552000001',
+        role: 'merchant',
+      });
+
+      expect(parseWholeDinars(MAX_SAFE_DINARS)).toBe(MAX_SAFE_DINARS);
+
+      const res = await request(app)
+        .post('/api/merchant/payment-requests')
+        .set('Authorization', `Bearer ${merchant.token}`)
+        .send({ amountDinars: MAX_SAFE_DINARS + 1 });
+
+      expect(res.status).toBe(400);
+      expect(res.body).toEqual({ error: 'amountDinars exceeds maximum allowed value' });
     });
 
     it('supports fallback "amount" field when amountDinars is omitted', async () => {

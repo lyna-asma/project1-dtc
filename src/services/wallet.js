@@ -1,6 +1,37 @@
 import { eq, or, desc, inArray, sql } from 'drizzle-orm';
 import { db } from '../db/index.js';
 import { users, wallets, transactions } from '../db/schema.js';
+import { extractRawAmountInput, parseWholeDinars } from './validation.js';
+
+/**
+ * Safely find or lazily create a user's zero-balance wallet inside a transaction
+ * using ON CONFLICT DO NOTHING to prevent concurrent duplicate insert races.
+ */
+export async function ensureWalletInTx(tx, userId) {
+  let [wallet] = await tx
+    .select()
+    .from(wallets)
+    .where(eq(wallets.userId, userId))
+    .limit(1);
+
+  if (!wallet) {
+    await tx
+      .insert(wallets)
+      .values({
+        userId,
+        balance: 0,
+      })
+      .onConflictDoNothing({ target: wallets.userId });
+
+    [wallet] = await tx
+      .select()
+      .from(wallets)
+      .where(eq(wallets.userId, userId))
+      .limit(1);
+  }
+
+  return wallet;
+}
 
 /**
  * Retrieve wallet by user ID
@@ -167,28 +198,11 @@ export async function adminLoadShopBalance({
     throw err;
   }
 
-  // Validate amountDinars
-  if (amountDinars === undefined) {
-    const err = new Error('amountDinars is required');
-    err.statusCode = 400;
-    throw err;
-  }
-
-  if (
-    typeof amountDinars !== 'number' ||
-    !Number.isInteger(amountDinars) ||
-    amountDinars <= 0
-  ) {
-    const err = new Error('amountDinars must be a positive integer');
-    err.statusCode = 400;
-    throw err;
-  }
-
-  if (amountDinars > Number.MAX_SAFE_INTEGER) {
-    const err = new Error('amountDinars exceeds maximum allowed value');
-    err.statusCode = 400;
-    throw err;
-  }
+  // Validate amountDinars using shared whole-dinar & centime-overflow helper
+  const parsedAmountDinars = parseWholeDinars(amountDinars, {
+    fieldLabel: 'amountDinars',
+    requiredMessage: 'amountDinars is required',
+  });
 
   return await dbClient.transaction(async (tx) => {
     // 1. Verify merchant exists
@@ -211,25 +225,11 @@ export async function adminLoadShopBalance({
       throw err;
     }
 
-    // 3. Find or create merchant wallet (initial balance = 0)
-    let [wallet] = await tx
-      .select()
-      .from(wallets)
-      .where(eq(wallets.userId, targetUser.id))
-      .limit(1);
-
-    if (!wallet) {
-      [wallet] = await tx
-        .insert(wallets)
-        .values({
-          userId: targetUser.id,
-          balance: 0,
-        })
-        .returning();
-    }
+    // 3. Find or safely initialize merchant wallet (initial balance = 0)
+    const wallet = await ensureWalletInTx(tx, targetUser.id);
 
     // 4. Update wallet balance: integer centimes math
-    const amountCentimes = amountDinars * 100;
+    const amountCentimes = parsedAmountDinars * 100;
 
     const [updatedWallet] = await tx
       .update(wallets)
@@ -239,8 +239,8 @@ export async function adminLoadShopBalance({
       .where(eq(wallets.id, wallet.id))
       .returning();
 
-    // Hook to test transaction rollback
-    if (_testFailureAfterBalanceUpdate) {
+    // Hook to test transaction rollback (locked off in production)
+    if (process.env.NODE_ENV !== 'production' && _testFailureAfterBalanceUpdate) {
       throw new Error('Simulated failure after balance update');
     }
 
@@ -271,7 +271,7 @@ export async function adminLoadShopBalance({
       transaction: {
         id: createdTx.id,
         type: createdTx.type,
-        amountDinars,
+        amountDinars: parsedAmountDinars,
         amountCentimes,
         toWalletId: createdTx.toWalletId,
         createdAt:
@@ -329,47 +329,17 @@ export async function merchantTopUp({
 
   const trimmedCustomerPhone = phoneInput.trim();
 
-  // Extract amount input
-  const hasAmountDinars =
-    amountDinars !== undefined ||
-    (Object.prototype.hasOwnProperty.call(payload, 'amountDinars') && payload.amountDinars !== undefined);
-
-  const hasAmount =
-    amount !== undefined ||
-    (Object.prototype.hasOwnProperty.call(payload, 'amount') && payload.amount !== undefined);
-
-  if (!hasAmountDinars && !hasAmount) {
-    const err = new Error('amountDinars is required');
-    err.statusCode = 400;
-    throw err;
-  }
-
-  const rawAmount = hasAmountDinars
-    ? amountDinars !== undefined
-      ? amountDinars
-      : payload.amountDinars
-    : amount !== undefined
-      ? amount
-      : payload.amount;
-
-  if (
-    typeof rawAmount !== 'number' ||
-    !Number.isFinite(rawAmount) ||
-    !Number.isInteger(rawAmount) ||
-    rawAmount <= 0
-  ) {
-    const err = new Error('Amount must be a positive integer');
-    err.statusCode = 400;
-    throw err;
-  }
-
-  if (rawAmount > Number.MAX_SAFE_INTEGER) {
-    const err = new Error('Amount exceeds maximum allowed value');
-    err.statusCode = 400;
-    throw err;
-  }
-
-  const finalAmountDinars = rawAmount;
+  // Extract & validate amount using shared helper (preserving baseline messages)
+  const { hasValue, rawAmount } = extractRawAmountInput({
+    amountDinars,
+    amount,
+    body,
+  });
+  const finalAmountDinars = parseWholeDinars(rawAmount, {
+    hasValue,
+    fieldLabel: 'Amount',
+    requiredMessage: 'amountDinars is required',
+  });
   const finalAmountCentimes = finalAmountDinars * 100;
 
   return await dbClient.transaction(async (tx) => {
@@ -431,39 +401,9 @@ export async function merchantTopUp({
       throw err;
     }
 
-    // 4. Ensure merchant wallet exists (initial balance 0)
-    let [merchantWallet] = await tx
-      .select()
-      .from(wallets)
-      .where(eq(wallets.userId, merchantUser.id))
-      .limit(1);
-
-    if (!merchantWallet) {
-      [merchantWallet] = await tx
-        .insert(wallets)
-        .values({
-          userId: merchantUser.id,
-          balance: 0,
-        })
-        .returning();
-    }
-
-    // 5. Ensure customer wallet exists (initial balance 0)
-    let [customerWallet] = await tx
-      .select()
-      .from(wallets)
-      .where(eq(wallets.userId, customerUser.id))
-      .limit(1);
-
-    if (!customerWallet) {
-      [customerWallet] = await tx
-        .insert(wallets)
-        .values({
-          userId: customerUser.id,
-          balance: 0,
-        })
-        .returning();
-    }
+    // 4 & 5. Safely ensure merchant and customer wallets exist (initial balance 0)
+    const merchantWallet = await ensureWalletInTx(tx, merchantUser.id);
+    const customerWallet = await ensureWalletInTx(tx, customerUser.id);
 
     // 6. Deterministic row-level lock ordering: lower wallet ID first
     const walletIdsInOrder = [merchantWallet.id, customerWallet.id].sort((a, b) => a - b);
@@ -504,8 +444,8 @@ export async function merchantTopUp({
       .where(eq(wallets.id, customerWallet.id))
       .returning();
 
-    // Hook to test transaction rollback
-    if (_testFailureAfterBalanceUpdate) {
+    // Hook to test transaction rollback (locked off in production)
+    if (process.env.NODE_ENV !== 'production' && _testFailureAfterBalanceUpdate) {
       throw new Error('Simulated failure after balance update');
     }
 

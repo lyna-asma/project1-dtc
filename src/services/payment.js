@@ -3,6 +3,8 @@ import bcrypt from 'bcryptjs';
 import { eq, and, sql } from 'drizzle-orm';
 import { db } from '../db/index.js';
 import { users, wallets, transactions, paymentRequests, idempotencyKeys } from '../db/schema.js';
+import { extractRawAmountInput, parseWholeDinars } from './validation.js';
+import { ensureWalletInTx } from './wallet.js';
 
 /**
  * Generate a random 6-character uppercase alphanumeric code
@@ -26,46 +28,16 @@ export async function createPaymentRequest({
   amount,
   body,
 }, dbClient = db) {
-  const payload = body || {};
+  const { hasValue, rawAmount } = extractRawAmountInput({
+    amountDinars,
+    amount,
+    body,
+  });
 
-  const hasAmountDinars =
-    amountDinars !== undefined ||
-    (Object.prototype.hasOwnProperty.call(payload, 'amountDinars') && payload.amountDinars !== undefined);
-
-  const hasAmount =
-    amount !== undefined ||
-    (Object.prototype.hasOwnProperty.call(payload, 'amount') && payload.amount !== undefined);
-
-  if (!hasAmountDinars && !hasAmount) {
-    const err = new Error('amountDinars must be a positive integer');
-    err.statusCode = 400;
-    throw err;
-  }
-
-  const rawAmount = hasAmountDinars
-    ? amountDinars !== undefined
-      ? amountDinars
-      : payload.amountDinars
-    : amount !== undefined
-      ? amount
-      : payload.amount;
-
-  if (
-    typeof rawAmount !== 'number' ||
-    !Number.isFinite(rawAmount) ||
-    !Number.isInteger(rawAmount) ||
-    rawAmount <= 0
-  ) {
-    const err = new Error('amountDinars must be a positive integer');
-    err.statusCode = 400;
-    throw err;
-  }
-
-  if (rawAmount > Number.MAX_SAFE_INTEGER) {
-    const err = new Error('amountDinars exceeds maximum allowed value');
-    err.statusCode = 400;
-    throw err;
-  }
+  const validatedAmountDinars = parseWholeDinars(rawAmount, {
+    hasValue,
+    fieldLabel: 'amountDinars',
+  });
 
   // Verify merchant user exists and has merchant role
   const [merchant] = await dbClient
@@ -102,7 +74,7 @@ export async function createPaymentRequest({
 
   const now = new Date();
   const expiresAt = new Date(now.getTime() + 5 * 60 * 1000); // exactly 5 minutes
-  const amountCentimes = rawAmount * 100;
+  const amountCentimes = validatedAmountDinars * 100;
 
   const [request] = await dbClient
     .insert(paymentRequests)
@@ -117,7 +89,7 @@ export async function createPaymentRequest({
 
   return {
     code: request.code,
-    amountDinars: rawAmount,
+    amountDinars: validatedAmountDinars,
     amountCentimes,
     expiresAt:
       request.expiresAt instanceof Date
@@ -208,28 +180,10 @@ export async function confirmPaymentRequest({
   customerUserId,
   password,
   idempotencyKey = null,
+  endpoint = 'POST /api/customer/payment-requests/:code/confirm',
   _testFailureAfterBalanceUpdate = false,
 }, dbClient = db) {
-  // Idempotency check: if key provided, check if already recorded
-  if (idempotencyKey && typeof idempotencyKey === 'string' && idempotencyKey.trim() !== '') {
-    const trimmedKey = idempotencyKey.trim();
-    const [existingKey] = await dbClient
-      .select()
-      .from(idempotencyKeys)
-      .where(
-        and(
-          eq(idempotencyKeys.key, trimmedKey),
-          eq(idempotencyKeys.userId, customerUserId)
-        )
-      )
-      .limit(1);
-
-    if (existingKey) {
-      return JSON.parse(existingKey.responseBody);
-    }
-  }
-
-  // Validate password input
+  // 1. Validate password input before any DB replay
   if (
     password === undefined ||
     password === null ||
@@ -241,7 +195,7 @@ export async function confirmPaymentRequest({
     throw err;
   }
 
-  // Fetch customer user
+  // 2. Fetch customer user
   const [customerUser] = await dbClient
     .select()
     .from(users)
@@ -254,7 +208,7 @@ export async function confirmPaymentRequest({
     throw err;
   }
 
-  // Password verification: bcrypt.compare
+  // 3. Password verification strictly BEFORE idempotency check/replay
   const isPasswordValid = await bcrypt.compare(password, customerUser.passwordHash);
   if (!isPasswordValid) {
     const err = new Error('Invalid password');
@@ -262,243 +216,253 @@ export async function confirmPaymentRequest({
     throw err;
   }
 
-  // Lookup payment request
+  // 4. Validate payment code
   if (!code || typeof code !== 'string' || code.trim() === '') {
     const err = new Error('Payment request not found');
     err.statusCode = 404;
     throw err;
   }
-
   const trimmedCode = code.trim();
 
-  const [paymentRequest] = await dbClient
-    .select()
-    .from(paymentRequests)
-    .where(eq(paymentRequests.code, trimmedCode))
-    .limit(1);
-
-  if (!paymentRequest) {
-    const err = new Error('Payment request not found');
-    err.statusCode = 404;
-    throw err;
-  }
-
-  if (paymentRequest.status === 'completed') {
-    const err = new Error('Payment code already used');
-    err.statusCode = 400;
-    throw err;
-  }
-
-  const isExpired =
-    paymentRequest.status === 'expired' ||
-    new Date() > new Date(paymentRequest.expiresAt);
-
-  if (isExpired) {
-    if (paymentRequest.status === 'pending') {
-      await dbClient
-        .update(paymentRequests)
-        .set({ status: 'expired' })
-        .where(eq(paymentRequests.id, paymentRequest.id));
-    }
-    const err = new Error('Payment code has expired');
-    err.statusCode = 400;
-    throw err;
-  }
-
-  // Self-payment check
-  if (paymentRequest.merchantId === customerUserId) {
-    const err = new Error('Cannot pay yourself');
-    err.statusCode = 400;
-    throw err;
-  }
-
-  // Atomic transaction
-  return await dbClient.transaction(async (tx) => {
-    // 1. Re-check & lock payment request
-    const [lockedRequest] = await tx
-      .select()
-      .from(paymentRequests)
-      .where(eq(paymentRequests.id, paymentRequest.id))
-      .for('update');
-
-    if (!lockedRequest || lockedRequest.status === 'completed') {
-      const err = new Error('Payment code already used');
+  // 5. Normalize and validate idempotency key and endpoint scope
+  let trimmedKey = null;
+  if (idempotencyKey !== null && idempotencyKey !== undefined) {
+    if (typeof idempotencyKey !== 'string') {
+      const err = new Error('Invalid idempotency key');
       err.statusCode = 400;
       throw err;
     }
+    const candidateKey = idempotencyKey.trim();
+    if (candidateKey.length > 255) {
+      const err = new Error('Invalid idempotency key');
+      err.statusCode = 400;
+      throw err;
+    }
+    if (candidateKey !== '') {
+      trimmedKey = candidateKey;
+    }
+  }
 
-    if (
-      lockedRequest.status === 'expired' ||
-      new Date() > new Date(lockedRequest.expiresAt)
-    ) {
-      if (lockedRequest.status === 'pending') {
-        await tx
-          .update(paymentRequests)
-          .set({ status: 'expired' })
-          .where(eq(paymentRequests.id, lockedRequest.id));
+  const normalizedEndpoint =
+    typeof endpoint === 'string' && endpoint.trim() !== ''
+      ? endpoint.trim()
+      : 'POST /api/customer/payment-requests/:code/confirm';
+
+  // 6. Compute request hash excluding password & test failure hook
+  const requestHash = crypto
+    .createHash('sha256')
+    .update(JSON.stringify({ code: trimmedCode }))
+    .digest('hex');
+
+  // 7. Atomic transaction with in-transaction advisory lock & scoped idempotency
+  let expiredRequestId = null;
+
+  try {
+    return await dbClient.transaction(async (tx) => {
+      if (trimmedKey) {
+        const lockScope = `${normalizedEndpoint}:${trimmedKey}`;
+        await tx.execute(
+          sql`SELECT pg_advisory_xact_lock(CAST(${customerUserId} AS integer), hashtext(CAST(${lockScope} AS text)))`
+        );
+
+        const [existingKey] = await tx
+          .select()
+          .from(idempotencyKeys)
+          .where(
+            and(
+              eq(idempotencyKeys.userId, customerUserId),
+              eq(idempotencyKeys.endpoint, normalizedEndpoint),
+              eq(idempotencyKeys.key, trimmedKey)
+            )
+          )
+          .limit(1);
+
+        if (existingKey) {
+          if (existingKey.requestHash !== requestHash) {
+            const err = new Error(
+              'Idempotency key already used with different request parameters'
+            );
+            err.statusCode = 409;
+            throw err;
+          }
+          return JSON.parse(existingKey.responseBody);
+        }
       }
-      const err = new Error('Payment code has expired');
-      err.statusCode = 400;
-      throw err;
-    }
 
-    // 2. Fetch merchant user
-    const [merchantUser] = await tx
-      .select()
-      .from(users)
-      .where(eq(users.id, lockedRequest.merchantId))
-      .limit(1);
-
-    if (!merchantUser) {
-      const err = new Error('Merchant not found');
-      err.statusCode = 404;
-      throw err;
-    }
-
-    // 3. Ensure wallets exist (initial balance 0)
-    let [customerWallet] = await tx
-      .select()
-      .from(wallets)
-      .where(eq(wallets.userId, customerUserId))
-      .limit(1);
-
-    if (!customerWallet) {
-      [customerWallet] = await tx
-        .insert(wallets)
-        .values({
-          userId: customerUserId,
-          balance: 0,
-        })
-        .returning();
-    }
-
-    let [merchantWallet] = await tx
-      .select()
-      .from(wallets)
-      .where(eq(wallets.userId, merchantUser.id))
-      .limit(1);
-
-    if (!merchantWallet) {
-      [merchantWallet] = await tx
-        .insert(wallets)
-        .values({
-          userId: merchantUser.id,
-          balance: 0,
-        })
-        .returning();
-    }
-
-    // 4. Deterministic row-level locking: lower wallet ID first
-    const walletIdsInOrder = [customerWallet.id, merchantWallet.id].sort((a, b) => a - b);
-    const lockedWalletsMap = new Map();
-    for (const wid of walletIdsInOrder) {
-      const [locked] = await tx
+      // Lock payment request row by code
+      const [lockedRequest] = await tx
         .select()
-        .from(wallets)
-        .where(eq(wallets.id, wid))
+        .from(paymentRequests)
+        .where(eq(paymentRequests.code, trimmedCode))
         .for('update');
-      lockedWalletsMap.set(wid, locked);
-    }
 
-    const lockedCustomerWallet = lockedWalletsMap.get(customerWallet.id);
+      if (!lockedRequest) {
+        const err = new Error('Payment request not found');
+        err.statusCode = 404;
+        throw err;
+      }
 
-    // 5. Check customer balance
-    const currentCustomerBalance = Number(lockedCustomerWallet.balance);
-    const paymentAmountCentimes = Number(lockedRequest.amount);
+      if (lockedRequest.status === 'completed') {
+        const err = new Error('Payment code already used');
+        err.statusCode = 400;
+        throw err;
+      }
 
-    if (currentCustomerBalance < paymentAmountCentimes) {
-      const err = new Error('Insufficient customer balance');
-      err.statusCode = 400;
-      throw err;
-    }
+      if (
+        lockedRequest.status === 'expired' ||
+        new Date() > new Date(lockedRequest.expiresAt)
+      ) {
+        if (lockedRequest.status === 'pending') {
+          expiredRequestId = lockedRequest.id;
+        }
+        const err = new Error('Payment code has expired');
+        err.statusCode = 400;
+        throw err;
+      }
 
-    // 6. Balance updates
-    const [updatedCustomerWallet] = await tx
-      .update(wallets)
-      .set({
-        balance: sql`${wallets.balance} - ${paymentAmountCentimes}`,
-      })
-      .where(eq(wallets.id, customerWallet.id))
-      .returning();
+      // Self-payment check
+      if (lockedRequest.merchantId === customerUserId) {
+        const err = new Error('Cannot pay yourself');
+        err.statusCode = 400;
+        throw err;
+      }
 
-    await tx
-      .update(wallets)
-      .set({
-        balance: sql`${wallets.balance} + ${paymentAmountCentimes}`,
-      })
-      .where(eq(wallets.id, merchantWallet.id))
-      .returning();
+      // Fetch merchant user
+      const [merchantUser] = await tx
+        .select()
+        .from(users)
+        .where(eq(users.id, lockedRequest.merchantId))
+        .limit(1);
 
-    // Hook for rollback testing
-    if (_testFailureAfterBalanceUpdate) {
-      throw new Error('Simulated failure during payment confirmation');
-    }
+      if (!merchantUser) {
+        const err = new Error('Merchant not found');
+        err.statusCode = 404;
+        throw err;
+      }
 
-    // 7. Update payment request status to completed
-    await tx
-      .update(paymentRequests)
-      .set({ status: 'completed' })
-      .where(eq(paymentRequests.id, lockedRequest.id));
+      // Safely ensure customer & merchant wallets exist (initial balance 0)
+      const customerWallet = await ensureWalletInTx(tx, customerUserId);
+      const merchantWallet = await ensureWalletInTx(tx, merchantUser.id);
 
-    // 8. Immutable ledger entry in transactions
-    const [createdTx] = await tx
-      .insert(transactions)
-      .values({
-        type: 'payment',
-        fromWalletId: customerWallet.id,
-        toWalletId: merchantWallet.id,
-        amount: paymentAmountCentimes,
-        feeAmount: 0,
-        status: 'completed',
-        referenceId: lockedRequest.id,
-        description: `Payment to ${merchantUser.name}`,
-      })
-      .returning();
+      // Deterministic row-level locking: lower wallet ID first
+      const walletIdsInOrder = [customerWallet.id, merchantWallet.id].sort((a, b) => a - b);
+      const lockedWalletsMap = new Map();
+      for (const wid of walletIdsInOrder) {
+        const [locked] = await tx
+          .select()
+          .from(wallets)
+          .where(eq(wallets.id, wid))
+          .for('update');
+        lockedWalletsMap.set(wid, locked);
+      }
 
-    const newCustomerBalanceCentimes = Number(updatedCustomerWallet.balance);
-    const newCustomerBalanceDinars = Math.floor(newCustomerBalanceCentimes / 100);
-    const paymentAmountDinars = Math.floor(paymentAmountCentimes / 100);
+      const lockedCustomerWallet = lockedWalletsMap.get(customerWallet.id);
 
-    const result = {
-      message: 'Payment confirmed successfully',
-      code: lockedRequest.code,
-      amountDinars: paymentAmountDinars,
-      amountCentimes: paymentAmountCentimes,
-      shopName: merchantUser.name,
-      newCustomerBalanceDinars,
-      newCustomerBalanceCentimes,
-      transaction: {
-        id: createdTx.id,
-        type: 'payment',
+      // Check customer balance
+      const currentCustomerBalance = Number(lockedCustomerWallet.balance);
+      const paymentAmountCentimes = Number(lockedRequest.amount);
+
+      if (currentCustomerBalance < paymentAmountCentimes) {
+        const err = new Error('Insufficient customer balance');
+        err.statusCode = 400;
+        throw err;
+      }
+
+      // Balance updates
+      const [updatedCustomerWallet] = await tx
+        .update(wallets)
+        .set({
+          balance: sql`${wallets.balance} - ${paymentAmountCentimes}`,
+        })
+        .where(eq(wallets.id, customerWallet.id))
+        .returning();
+
+      await tx
+        .update(wallets)
+        .set({
+          balance: sql`${wallets.balance} + ${paymentAmountCentimes}`,
+        })
+        .where(eq(wallets.id, merchantWallet.id))
+        .returning();
+
+      // Hook for rollback testing (locked off in production)
+      if (process.env.NODE_ENV !== 'production' && _testFailureAfterBalanceUpdate) {
+        throw new Error('Simulated failure during payment confirmation');
+      }
+
+      // Update payment request status to completed
+      await tx
+        .update(paymentRequests)
+        .set({ status: 'completed' })
+        .where(eq(paymentRequests.id, lockedRequest.id));
+
+      // Immutable ledger entry in transactions
+      const [createdTx] = await tx
+        .insert(transactions)
+        .values({
+          type: 'payment',
+          fromWalletId: customerWallet.id,
+          toWalletId: merchantWallet.id,
+          amount: paymentAmountCentimes,
+          feeAmount: 0,
+          status: 'completed',
+          referenceId: lockedRequest.id,
+          description: `Payment to ${merchantUser.name}`,
+        })
+        .returning();
+
+      const newCustomerBalanceCentimes = Number(updatedCustomerWallet.balance);
+      const newCustomerBalanceDinars = Math.floor(newCustomerBalanceCentimes / 100);
+      const paymentAmountDinars = Math.floor(paymentAmountCentimes / 100);
+
+      const result = {
+        message: 'Payment confirmed successfully',
+        code: lockedRequest.code,
         amountDinars: paymentAmountDinars,
         amountCentimes: paymentAmountCentimes,
-        fromWalletId: createdTx.fromWalletId,
-        toWalletId: createdTx.toWalletId,
-        status: 'completed',
-        createdAt:
-          createdTx.createdAt instanceof Date
-            ? createdTx.createdAt.toISOString()
-            : new Date(createdTx.createdAt).toISOString(),
-      },
-    };
+        shopName: merchantUser.name,
+        newCustomerBalanceDinars,
+        newCustomerBalanceCentimes,
+        transaction: {
+          id: createdTx.id,
+          type: 'payment',
+          amountDinars: paymentAmountDinars,
+          amountCentimes: paymentAmountCentimes,
+          fromWalletId: createdTx.fromWalletId,
+          toWalletId: createdTx.toWalletId,
+          status: 'completed',
+          createdAt:
+            createdTx.createdAt instanceof Date
+              ? createdTx.createdAt.toISOString()
+              : new Date(createdTx.createdAt).toISOString(),
+        },
+      };
 
-    if (idempotencyKey && typeof idempotencyKey === 'string' && idempotencyKey.trim() !== '') {
-      const trimmedKey = idempotencyKey.trim();
-      try {
+      if (trimmedKey) {
         await tx.insert(idempotencyKeys).values({
           key: trimmedKey,
           userId: customerUserId,
+          endpoint: normalizedEndpoint,
+          requestHash,
           statusCode: 200,
           responseBody: JSON.stringify(result),
         });
-      } catch (err) {
-        // If unique violation occurs concurrently, it's safe
-        if (err.code !== '23505') {
-          throw err;
-        }
       }
-    }
 
-    return result;
-  });
+      return result;
+    });
+  } catch (err) {
+    if (expiredRequestId !== null) {
+      await dbClient
+        .update(paymentRequests)
+        .set({ status: 'expired' })
+        .where(
+          and(
+            eq(paymentRequests.id, expiredRequestId),
+            eq(paymentRequests.status, 'pending')
+          )
+        );
+    }
+    throw err;
+  }
 }
