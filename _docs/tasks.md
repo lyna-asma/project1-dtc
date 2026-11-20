@@ -75,7 +75,7 @@ This backlog preserves all **15 historical Cohort Baseline v0 tasks (`Task 1`–
 - **Open owner decisions:** `None`.
 
 #### Task 17: CI Pipeline Branch Coverage (`next-product`) & Migration/Build Verification
-- **Status:** `Ready for Grooming / Active Blendinar v1`
+- **Status:** `Completed (Blendinar v1 — Milestone 1)` *(verified on `next-product`: `QA: PASS`, `REVIEW: APPROVE`)*
 - **Goal:** Configure `.github/workflows/ci.yml` to run PostgreSQL migrations, full `npm test`, and `npm run build` on pushes and PRs targeting `next-product` as well as `main` without disturbing the Cohort Baseline on `main`.
 - **In plain words:** Automatically runs all database migrations, automated tests, and the React build check on our active Blendinar development branch (`next-product`) so regressions are caught immediately.
 - **Product plan rules & requirements:** `_docs/process.md` repository safeguards (never alter Cohort Baseline on `main`; test against real PostgreSQL).
@@ -83,9 +83,9 @@ This backlog preserves all **15 historical Cohort Baseline v0 tasks (`Task 1`–
   - *Happy path:* Developer pushes a commit to `next-product` -> GitHub Actions boots PostgreSQL 16, runs `npx drizzle-kit migrate`, executes `npm test`, and runs `npm run build` cleanly.
   - *Failure:* A broken Drizzle migration or failing financial test causes CI on `next-product` to fail red before merge.
 - **Acceptance criteria:**
-  - [ ] `.github/workflows/ci.yml` triggers on `push` and `pull_request` for `branches: [main, next-product]`.
-  - [ ] CI starts PostgreSQL 16, runs `npm ci`, applies `npx drizzle-kit migrate`, runs `npm test`, and builds React via `npm run build`.
-  - [ ] No hardcoded secrets or credentials added to workflow files.
+  - [x] `.github/workflows/ci.yml` triggers on `push` and `pull_request` for `branches: [main, next-product]`.
+  - [x] CI starts PostgreSQL 16, runs `npm ci`, applies `npx drizzle-kit migrate`, runs `npm test`, and builds React via `npm run build`.
+  - [x] No hardcoded secrets or credentials added to workflow files.
 - **Out of scope:** Public URL hosting deployment (Task 15 deferred); changing application logic.
 - **Dependencies:** None.
 - **Relevant existing implementation or files:** `.github/workflows/ci.yml`, `package.json`.

@@ -59,12 +59,13 @@ A cash-to-digital wallet and hosted online-merchant payment platform prototype e
 - **Centime Wallets & Append-Only Ledger (Task 4 / `#9`):** `GET /api/customer/balance`, `GET /api/customer/transactions`.
 - **Admin Shop Load & Shop-Float Cash Top-Up (Tasks 5–6 / `#10`–`#11`):** `POST /api/admin/shops/:merchantId/load`, `POST /api/merchant/top-up` with crash-rollback proofs.
 - **5-Minute 6-Char Payment Codes & Baseline Concurrency (Task 7 & partial Task 9 / `#12`–`#13`):** `POST /api/merchant/payment-requests`, `GET /api/customer/payment-requests/:code`, `POST /api/customer/payment-requests/:code/confirm`, idempotency replay, dual-800-DA race, and baseline balance conservation (`tests/payment-concurrency.test.js`).
-- **Docker Compose & `main` CI (partial Task 15 / `#20`):** `Dockerfile`, `docker-compose.yml`, `.github/workflows/ci.yml`.
-- **Automated Real-PostgreSQL Tests:** **10 test files, 137 passing tests** (`npm test`, including `tests/otp-demo-mode.test.js`).
+- **Docker Compose & Multi-Branch CI (partial Task 15 / `#20` + Task 17):** `Dockerfile`, `docker-compose.yml`, `.github/workflows/ci.yml` (`main` + `next-product`).
+- **Task 16 Scoped Idempotency & Overflow Guard (`next-product`):** Composite `(user_id, endpoint, key)` + `request_hash`, password check before replay, `pg_advisory_xact_lock`, and `MAX_SAFE_DINARS` validation (`drizzle/0004_elite_titania.sql`, `src/services/validation.js`).
+- **Automated Real-PostgreSQL Tests:** **10 test files, 148 passing tests** on `next-product` (**137 tests** in Cohort Baseline v0 on `main`, including `tests/otp-demo-mode.test.js`).
 - **Frontend Scaffold:** React 19 + Vite 6 + Tailwind CSS 4 starter card in `src/client/App.jsx`.
 
 ### Planned Blendinar v1 Scope (`_docs/plan.md` & `_docs/tasks.md` Milestones 1–9)
-- Scoped `(user_id, endpoint, key)` idempotency + payload validation + auth/password-before-replay + overflow guard (`Task 16`), `next-product` CI (`Task 17`), env-only admin/JWT hardening (`Task 18`).
+- Env-only admin/JWT hardening & clean shop-float baseline replacement (`Task 18`; Tasks 16–17 implemented on `next-product`).
 - Email-first registration + simulated email OTP + optional phone (`Task 19`), passport-only KYC stages (`Task 20`), live `requireAuth` account suspension (`Task 21`).
 - Employee `agent` role, Fixed-Location Offices vs. Individual Agents, Cash Exposure Limits, and in-app Agent Directory & Trust Verification (`Tasks 22–23`).
 - Option B fixed-preset pending cash top-ups, Admin hand-in release, and cash shortage reconciliation (`Tasks 24–26`).
@@ -145,7 +146,7 @@ Run the full automated real-PostgreSQL test suite:
 ```bash
 npm test
 ```
-Executes `vitest run --no-file-parallelism` across all **10 test files (137 automated tests)** in `tests/` (including `tests/otp-demo-mode.test.js`).
+Executes `vitest run --no-file-parallelism` across all **10 test files (148 automated tests** on `next-product`; **137 tests** in Cohort Baseline v0 on `main`) in `tests/` (including `tests/otp-demo-mode.test.js`).
 
 Run an individual test file:
 ```bash
@@ -178,7 +179,7 @@ project1-dtc/
 │   ├── scripts/                  # Idempotent admin seed script (src/scripts/seed-admin.js)
 │   └── client/                   # React 19 + Vite 6 + Tailwind CSS 4 starter card (App.jsx)
 ├── drizzle/                      # Forward-only SQL migrations
-├── tests/                        # Real-PostgreSQL Vitest + Supertest suites (10 files, 137 tests)
+├── tests/                        # Real-PostgreSQL Vitest + Supertest suites (10 files; 148 tests on next-product, 137 in Cohort v0 on main)
 ├── .github/workflows/ci.yml      # GitHub Actions CI pipeline
 ├── AGENTS.md                     # Repo-wide AI agent rules and commands
 ├── Dockerfile                    # Multi-step container build & startup
@@ -214,13 +215,13 @@ Blendinar follows a **5-agent engineering workflow** defined in [`_docs/process.
 5. **Independent Reviewer (`_docs/team/reviewer.md`):** Audits sensitive financial, schema, auth, and architectural tasks before coding and after QA (`## REVIEW: APPROVE` / `## REVIEW: CHANGES REQUESTED`).
 
 ### Verified Progress Today
-Cohort Baseline tasks `1`–`7` plus partial `9` and `15` are implemented and verified in `src/` with **10 test files and 137 passing tests** (`npm test`), Docker Compose packaging, and `main` branch CI. Blendinar v1 features (`Tasks 8, 12/27, 13, 14, 16–35`) are specified and ready for sequential gated execution on `next-product`.
+Cohort Baseline tasks `1`–`7` plus partial `9` and `15` are verified on `main` (**10 test files, 137 passing tests**). On **`next-product`**, **Task 16** (scoped `(user_id, endpoint, key)` idempotency, payload hashing, auth-before-replay, `pg_advisory_xact_lock`, and `MAX_SAFE_DINARS` overflow guard) and **Task 17** (`main` + `next-product` CI coverage) are implemented with **10 test files and 148 passing tests** (`npm test`), while remaining Blendinar v1 features (`Tasks 8, 12/27, 13, 14, 18–35`) proceed sequentially through gated milestones.
 
 ---
 
 ## Continuous Integration & Deployment Guide (Not Deployed Yet)
 
-- **CI (`.github/workflows/ci.yml`):** Currently runs PostgreSQL 16 migrations, `npm test`, and `npm run build` on pushes/PRs to `main` (**Task 17** extends CI to `next-product`).
+- **CI (`.github/workflows/ci.yml`):** Runs PostgreSQL 16 migrations (`npx drizzle-kit migrate`), the full real-DB suite (`npm test` — **10 test files, 148 tests** on `next-product`; **137 tests** in Cohort Baseline v0 on `main`), and production build verification (`npm run build`) on pushes and pull requests to both **`main`** and **`next-product`**.
 - **Hosting Status:** **Not deployed publicly yet.** `Dockerfile` builds the frontend, runs `npx drizzle-kit migrate && node src/scripts/seed-admin.js && node src/index.js`, and listens on `PORT` (`3000`).
 
 ### Render Deployment Environment Variables (Reference)
