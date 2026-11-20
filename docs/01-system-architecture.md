@@ -1,38 +1,38 @@
 # 01 — System Architecture & Layered Design
 
-## 1. The Big Picture: A "Layered Monolith"
+## 1. The Big Picture: A "Layered Monolith" (Current Cohort Baseline v0)
 
-This project is built as a **Modular Layered Monolith**:
-* **Monolith** means the entire backend runs as **one single program** instead of being split into many separate mini-programs (**microservices**).
-* **Layered** means the code inside that program is neatly divided into **4 stacked layers**, where each layer has one clear job.
+This codebase is structured as a **Modular Layered Monolith**:
+* **Monolith** means the entire backend runs inside **one single Node.js program** rather than separate microservices.
+* **Layered** means code is split cleanly into **4 stacked layers**, where each layer has one responsibility.
 
-Why keep it as one program? Because when you move money from Wallet A to Wallet B, both updates must happen together inside one database. Keeping everything in one program connected to one **PostgreSQL** database (a popular, rock-solid database system) makes it much easier to guarantee money never disappears.
+Keeping everything in one Express + PostgreSQL application lets money movements update multiple rows inside a single **ACID database transaction** (an all-or-nothing step) so digital balances never get out of sync.
 
 ```mermaid
 flowchart TD
-    Client["User's App / Browser / Automated Tests"] --> ExpressApp["Web Server Entry (src/app.js)"]
+    Client["Client Browser / Automated Tests"] --> ExpressApp["Web Server Entry (src/app.js)"]
 
-    subgraph HTTP_Layer ["Layer 1: Routes (src/routes/) — Receives web requests"]
+    subgraph HTTP_Layer ["Layer 1: Routes (src/routes/) — Currently Implemented v0"]
         AuthR["auth.js (/api/auth)"]
         CustR["customer.js (/api/customer)"]
         MerchR["merchant.js (/api/merchant)"]
         AdminR["admin.js (/api/admin)"]
     end
 
-    subgraph Security_Layer ["Layer 2: Middleware (src/middleware/) — Security guards"]
-        AuthMW["requireAuth (Checks login pass)"]
-        RoleMW["requireRole (Checks if customer, shop, or admin)"]
+    subgraph Security_Layer ["Layer 2: Middleware (src/middleware/) — Security Guards"]
+        AuthMW["requireAuth (Verifies JWT token)"]
+        RoleMW["requireRole (Checks customer, merchant, or admin)"]
     end
 
-    subgraph Domain_Layer ["Layer 3: Services (src/services/) — Business rules & math"]
-        OtpSvc["otp.js (Creates & sends fake SMS codes)"]
-        WalletSvc["wallet.js (Balances, history, loading shops, top-ups)"]
-        PaySvc["payment.js (Payment codes & safe checkout)"]
+    subgraph Domain_Layer ["Layer 3: Services (src/services/) — Business Rules & Money Math"]
+        OtpSvc["otp.js (Simulated OTP codes)"]
+        WalletSvc["wallet.js (Balances, history, admin shop load, shop top-up)"]
+        PaySvc["payment.js (6-char payment codes & confirmation)"]
     end
 
-    subgraph Data_Layer ["Layer 4: Database (src/db/) — Saves data permanently"]
-        Drizzle["Drizzle ORM (Translates JS into SQL database commands)"]
-        Schema["schema.js (Defines tables & safety rules)"]
+    subgraph Data_Layer ["Layer 4: Database (src/db/) — Permanent Storage"]
+        Drizzle["Drizzle ORM (Translates JS to SQL)"]
+        Schema["schema.js (6 baseline tables & CHECK constraints)"]
         PG[("PostgreSQL 16 Database")]
     end
 
@@ -54,57 +54,143 @@ flowchart TD
     Drizzle --> Schema --> PG
 ```
 
-### What Each Layer Does
-1. **Routes (`src/routes/`)**: Like a receptionist. They listen for web requests (called **API endpoints**—URLs like `/api/auth/login`), read the incoming data, call the right Service, and send back a response (like `200 OK` or `400 Bad Request`).
-2. **Middleware (`src/middleware/`)**: Security guards that stand in front of the Routes. Before a request reaches a route, the middleware checks if the user is logged in and has the right role.
-3. **Services (`src/services/`)**: The brains of the app. All money math, balance checks, and database transactions live here. Services know nothing about web requests or URLs—they just take inputs and return results or errors.
-4. **Database (`src/db/`)**: Uses **Drizzle ORM** (an **ORM**, or *Object-Relational Mapper*, is a tool that lets you write JavaScript instead of raw database language **SQL**) to talk to **PostgreSQL**.
+### What Each Layer Does Today (`src/`)
+1. **Routes (`src/routes/`):** Receive HTTP requests, extract parameters/headers, delegate work to Services, and map errors to clean HTTP status codes (`200`, `201`, `400`, `401`, `403`, `404`, `409`).
+2. **Middleware (`src/middleware/auth.js`):** Security checkpoints checking signed **JWTs** (*JSON Web Tokens*) via `requireAuth` and role permissions via `requireRole`.
+3. **Services (`src/services/`):** Hold all business validation, integer-centime math, row locking (`SELECT ... FOR UPDATE`), and atomic transactions (`otp.js`, `wallet.js`, `payment.js`).
+4. **Database (`src/db/`):** Uses **Drizzle ORM** (*Object-Relational Mapper*) and `pg` connection pooling (`src/db/index.js`) over PostgreSQL 16 (`src/db/schema.js`).
 
 ---
 
-## 2. Why `app.js` and `index.js` Are Separate Files
+## 2. Why `src/app.js` and `src/index.js` Are Separate Files
 
-If you look in `src/`, you will see two main files: [`src/app.js`](../src/app.js) and [`src/index.js`](../src/index.js). Separating them is a classic engineering trick:
+* **[`src/app.js`](../src/app.js)** configures Express middleware (`cors`, `express.json`) and mounts `/health`, `/api/health`, `/api/auth`, `/api/customer`, `/api/merchant`, and `/api/admin` **without opening a network port**.
+* **[`src/index.js`](../src/index.js)** loads `.env`, wires Vite/static frontend serving, and starts listening on `PORT` (default `3000`).
 
-* **[`src/app.js`](../src/app.js)** sets up all the routes and rules, **but does not start listening on a network port** (like port `3000`).
-* **[`src/index.js`](../src/index.js)** loads secret settings from `.env`, attaches the React webpage, and finally starts the server on port `3000`.
-
-### Why do engineers split them?
-1. **Faster, cleaner automated tests:** Testing tools (**Vitest** and **Supertest**) can load `app.js` directly in memory and test every URL without actually opening port `3000` on your computer.
-2. **Three ways to serve the frontend webpage in `src/index.js`:**
-   * **Production mode (`NODE_ENV=production`):** Serves the pre-built, optimized webpage files from the `dist/` folder.
-   * **Test mode (`NODE_ENV=test`):** Skips loading the webpage completely so tests run fast.
-   * **Development mode (default):** Starts **Vite** (a fast frontend build tool) inside Express so developers get instant screen refreshes while editing React code.
+### Why Split Them?
+1. **In-memory automated testing:** Vitest + Supertest import `app` directly from `src/app.js` without port conflicts or Vite startup overhead.
+2. **Three frontend serving modes in `src/index.js`:**
+   * **`NODE_ENV=production`:** Serves static React files built into `dist/`.
+   * **`NODE_ENV=test`:** Skips frontend serving completely.
+   * **Development (default):** Embeds Vite middleware for instant hot reload.
 
 ---
 
-## 3. All Web Addresses (API Endpoints) in the App
+## 3. Currently Implemented API Endpoints (Cohort Baseline v0)
 
-An **API** (*Application Programming Interface*) is the set of URLs a frontend or mobile app uses to talk to the backend server.
-
-| URL | Action | Who Can Use It? | What It Does |
+| URL | Method | Access Today | Current Behavior |
 | :--- | :--- | :--- | :--- |
-| `/health` or `/api/health` | `GET` (Read) | Anyone | Returns `{"status":"ok"}` to prove the server is alive. |
-| `/api/auth/register` | `POST` (Create) | Anyone | Signs up a new `customer` or `merchant` (blocks `admin`) and creates a 6-digit verification code. |
-| `/api/auth/otp/:phone` | `GET` (Read) | Anyone (Dev/Demo only) | Shows the fake SMS code for testing. Hidden in real production. |
-| `/api/auth/verify-otp` | `POST` (Send) | Anyone | Checks the 6-digit code, marks the user verified, and creates their 0 DA wallet. |
-| `/api/auth/login` | `POST` (Send) | Anyone | Checks phone + password and gives back a **JWT** (a digital login pass). |
-| `/api/customer/balance` | `GET` (Read) | Customer only | Shows the customer's current wallet balance. |
-| `/api/customer/transactions` | `GET` (Read) | Customer only | Shows the customer's personal money history. |
-| `/api/customer/payment-requests/:code` | `GET` (Read) | Customer only | Looks up a shop's payment code so the customer can see the shop name and price first. |
-| `/api/customer/payment-requests/:code/confirm` | `POST` (Send) | Customer only | Customer enters their password to actually pay the shop. |
-| `/api/merchant/payment-requests` | `POST` (Create) | Merchant (Shop) only | Creates a 6-character payment code that expires in 5 minutes. |
-| `/api/merchant/top-up` | `POST` (Send) | Merchant (Shop) only | Moves money from the shop's wallet to a customer's wallet (when the customer pays cash). |
-| `/api/admin/shops/:merchantId/load` | `POST` (Send) | Admin only | Adds new digital money into a shop's wallet. |
+| `/health`, `/api/health` | `GET` | Public | Returns `{"status":"ok"}`. |
+| `/api/auth/register` | `POST` | Public | Registers `customer` or `merchant` by phone + password (blocks `admin`), sends simulated OTP. |
+| `/api/auth/otp/:phone` | `GET` | Public (Dev/`DEMO_MODE`) | Reads latest simulated OTP; returns `404` in production unless `DEMO_MODE=true`. |
+| `/api/auth/verify-otp` | `POST` | Public | Verifies 6-digit phone OTP and initializes a `0`-centime wallet. |
+| `/api/auth/login` | `POST` | Public | Checks phone + password (`bcrypt`), ensures `is_verified`, returns 24h JWT. |
+| `/api/customer/balance` | `GET` | `customer` | Returns `{ balanceDinars, balanceCentimes }`. |
+| `/api/customer/transactions` | `GET` | `customer` | Returns customer's chronological ledger history. |
+| `/api/customer/payment-requests/:code` | `GET` | `customer` | Previews shop name and amount for an active 5-min code. |
+| `/api/customer/payment-requests/:code/confirm` | `POST` | `customer` | Password-confirms payment with idempotency key support. |
+| `/api/merchant/payment-requests` | `POST` | `merchant` | Creates a 6-character single-use 5-minute payment code. |
+| `/api/merchant/top-up` | `POST` | `merchant` | Credits customer wallet from shop balance (Cohort v0 shop-float model). |
+| `/api/admin/shops/:merchantId/load` | `POST` | `admin` | Loads new simulated funds into a shop wallet. |
 
 ---
 
-## 4. How Errors Are Handled Cleanly
+## 4. Clean Error Handling
 
-Inside `src/services/`, when something goes wrong (like "Insufficient customer balance" or "Payment code expired"), the service creates a normal JavaScript error and attaches an HTTP status number (`err.statusCode = 400`, `401`, `403`, or `404`).
+Services attach `.statusCode` (`400`, `401`, `403`, `404`, etc.) to domain errors. Routes return `{ "error": "..." }` for known client/business errors and safely mask unexpected failures behind `500 Internal server error`.
 
-The route file catches that error and sends back a clean JSON message like:
-```json
-{ "error": "Insufficient customer balance" }
+---
+
+## 5. Blendinar v1 Target Architecture Evolution *(Planned — Not Yet Built in `src/`)*
+
+As [`_docs/tasks.md`](../_docs/tasks.md) Milestones 1–9 are implemented on the `next-product` branch, the layered monolith expands cleanly while keeping the same 4-layer separation:
+
+### Key Architectural Additions in Blendinar v1
+1. **4-Role & Live-Status Middleware (`src/middleware/`):**
+   - `requireRole` expands to 4 roles: `customer`, `agent` (Blendinar employee), `merchant`, and `admin`.
+   - `requireAuth` checks live `users.status` (`active` vs. `suspended`) in PostgreSQL so suspended users' existing tokens fail immediately (`R15`, Task 21).
+   - Dedicated Merchant API authentication middleware validates external merchant `API Key + Secret` for server-to-server checkout creation (Task 28).
+2. **Modular Domain Services (`src/services/`):**
+   - `identity` (email-first auth, optional `NULL`-normalized phone, `DEMO_MODE` email OTP, passport KYC stages)
+   - `agents` (Fixed-Location Offices / "Partner Points" vs. Individual Agents, directory, cash exposure limits)
+   - `topups-handin` (fixed presets, Option B pending top-ups, Admin hand-in confirmation, shortage audit & risk review flags)
+   - `merchants-checkout` (website/CCP onboarding, manual `Verified` vs. `Unverified` status, checkout session creation, Hosted Checkout payment + configurable merchant fee split)
+   - `payouts` (daily simulated CCP payout batch preparation, Admin settlement confirmation, exception states)
+   - `refunds` (immediate `0`-fee spendable-to-locked balance lock and Agent physical cash disbursement)
+   - `admin-config` (centralized configurable limits/presets/fees, suspension controls, and Two-Part Conservation audit queries)
+3. **External Merchant Integration Boundary:**
+   - External merchant websites run completely outside Blendinar (`_docs/plan.md` Section 1). When a buyer clicks "Pay with Blendinar", the merchant server authenticates to Blendinar to create a 5-minute `checkout_session` (with validated `return_url` / `cancel_url`) and redirects the customer to Blendinar's Hosted Checkout UI.
+
+```mermaid
+flowchart TD
+    ExtSite["External Merchant Website (Server-to-Server API)"] -->|"API Key + Secret -> Create Session"| MerchAPI["Merchant Checkout API (/api/merchant/checkout-sessions)"]
+    Browser["Blendinar React SPA (Customer / Agent / Merchant / Admin / Hosted Checkout)"] --> Express["Express App (src/app.js)"]
+    MerchAPI --> Express
+
+    subgraph Guards ["Security & Auth Middleware"]
+        LiveAuth["requireAuth (JWT + Live DB Status Check)"]
+        Role4["requireRole (customer | agent | merchant | admin)"]
+        ApiKeyAuth["requireMerchantApiKey (Hashed Secret Check)"]
+    end
+
+    subgraph Services ["Blendinar v1 Domain Services (Planned)"]
+        IdentitySvc["identity (Email OTP + Passport KYC)"]
+        AgentSvc["agents (Offices, Directory, Exposure Caps)"]
+        TopUpSvc["topups-handin (Option B Pending & Hand-In)"]
+        PaySvc["merchants-checkout (Hosted Checkout + Fee Split)"]
+        PayoutSvc["payouts (Daily Simulated CCP Batches)"]
+        RefundSvc["refunds (Atomic Lock & Cash Payout)"]
+        ConfigSvc["admin-config (Centralized Limits, Suspension & Conservation)"]
+    end
+
+    PG[("PostgreSQL 16 + Drizzle Forward-Only Migrations")]
+
+    Express --> LiveAuth
+    LiveAuth --> Role4
+    Express --> ApiKeyAuth
+    Role4 --> Services
+    ApiKeyAuth --> PaySvc
+    Services --> PG
 ```
-If something unexpected crashes (like the database disconnecting), the route hides the messy details and safely returns `500 Internal server error`.
+
+### Blendinar v1 Use-Case & System Boundary Diagram *(Planned)*
+
+```mermaid
+flowchart LR
+    subgraph ExternalWorld ["External World (Outside Blendinar)"]
+        Tourist["Tourists with Physical DZD and Passports"]
+        ExtSites["External Merchant Websites (Own Storefronts)"]
+        SimCCP["Simulated Algérie Poste CCP Destination"]
+    end
+
+    subgraph Portals ["Blendinar 5 React Portals (Planned - Task 13 and Task 14)"]
+        CustUI["Customer Portal (3-State Wallet + Agent Directory)"]
+        CheckoutUI["Hosted Checkout Page (Merchant Badge + 0 Customer Fee)"]
+        AgentUI["Agent Portal (Passport Check, Top-Ups, Cash Refunds)"]
+        MerchUI["Merchant Portal (API Keys, Sales, Daily Payout History)"]
+        AdminUI["Admin Dashboard (Hand-Ins, Verify, Limits/Fees, Payouts, Audit)"]
+    end
+
+    subgraph Backend ["Blendinar Monolith Backend (Express + PostgreSQL)"]
+        CustRoutes["/api/customer/* (Customer Actor)"]
+        AgentRoutes["/api/agent/* (Employee Agent Actor)"]
+        MerchRoutes["/api/merchant/* (External Merchant Actor)"]
+        AdminRoutes["/api/admin/* (Administrator Actor)"]
+        CoreSvc["Domain Services + Row-Locked Ledger (src/services/ and src/db/)"]
+    end
+
+    Tourist -->|"In-person cash and passport"| AgentUI
+    Tourist --> CustUI
+    ExtSites -->|"API Key + Secret creates session and redirects buyer"| MerchRoutes
+    ExtSites -->|"Redirects buyer"| CheckoutUI
+    CustUI --> CustRoutes
+    CheckoutUI --> CustRoutes
+    AgentUI --> AgentRoutes
+    MerchUI --> MerchRoutes
+    AdminUI --> AdminRoutes
+    CustRoutes --> CoreSvc
+    AgentRoutes --> CoreSvc
+    MerchRoutes --> CoreSvc
+    AdminRoutes --> CoreSvc
+    CoreSvc -->|"Daily Admin-confirmed settlement"| SimCCP
+```

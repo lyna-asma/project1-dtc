@@ -1,18 +1,16 @@
 # 03 — Concurrency Control, Deadlock Prevention & Idempotency
 
-One of the hardest problems in money software is **concurrency**—what happens when two things happen at the exact same millisecond. This guide explains the three safety shields built into the app.
+One of the hardest problems in financial software is **concurrency**—what happens when two requests hit the server at the exact same millisecond. This guide explains the concurrency shields built into Cohort Baseline v0 and the upgraded state machines and race protections planned for Blendinar v1.
 
 ---
 
-## 1. Stopping "Double Spending" with Row Locks
+## 1. Stopping "Double Spending" with Row Locks (Implemented Today)
 
-Imagine a customer has **1,000 DA** in their wallet and tries to pay **800 DA** twice at the exact same millisecond (for example, tapping "Pay" on two phones at once).
+If a customer has **1,000 DA** and two **800 DA** payment requests arrive simultaneously, without database locking both requests could read `1,000 DA`, both pass the check, and both subtract `800 DA`. That bug is a **race condition**.
 
-Without protection, both requests look at the database at the same time, both see `1,000 DA`, both think *"Awesome, 1,000 >= 800!"*, and both subtract `800 DA`. That bug is called a **race condition** (two operations racing each other and breaking the rules).
-
-### How This App Solves It: Pessimistic Row-Level Locking (`SELECT ... FOR UPDATE`)
-* **Transaction (`db.transaction`):** A group of database steps that must **all succeed together or all cancel together** (like an all-or-nothing bundle).
-* **Pessimistic Row-Level Lock (`.for('update')`):** Telling PostgreSQL: *"Freeze this specific wallet row right now. Nobody else is allowed to read or edit it until my transaction finishes."*
+### Solution: Pessimistic Row-Level Locking (`SELECT ... FOR UPDATE`)
+* **Transaction (`db.transaction`):** An all-or-nothing database bundle.
+* **Row-Level Lock (`.for('update')`):** Tells PostgreSQL: *"Lock this exact row now; make concurrent transactions wait until mine commits or rolls back."*
 
 ```mermaid
 sequenceDiagram
@@ -27,73 +25,158 @@ sequenceDiagram
     end
 
     ReqA->>PG: Lock Customer Wallet (FOR UPDATE)
-    ReqB->>PG: Lock Customer Wallet (FOR UPDATE) -> WAITS IN LINE
-    PG-->>ReqA: Lock granted! Balance is 1,000 DA
+    ReqB->>PG: Lock Customer Wallet (FOR UPDATE) - waits
+    PG-->>ReqA: Lock granted (Balance = 1,000 DA)
 
-    ReqA->>PG: Subtract 800 DA (Balance becomes 200 DA)
-    ReqA->>PG: Mark payment code as 'completed'
-    ReqA->>PG: Save transaction in ledger
-    ReqA->>PG: Finish & Commit (Releases lock)
-    PG-->>ReqA: 200 OK (Paid! 200 DA left)
+    ReqA->>PG: Deduct 800 DA (Balance = 200 DA)
+    ReqA->>PG: Mark payment completed and append ledger row
+    ReqA->>PG: Commit and release lock
+    PG-->>ReqA: 200 OK (200 DA remaining)
 
-    Note over ReqB,PG: Now Request B gets its turn and sees the NEW balance (200 DA)
-    PG-->>ReqB: Lock granted! Balance is 200 DA
-    ReqB->>ReqB: Check: 200 DA < 800 DA -> Not enough money!
-    ReqB->>PG: Cancel (Rollback)
-    PG-->>ReqB: 400 Error ("Insufficient customer balance")
+    PG-->>ReqB: Lock granted (Sees Balance = 200 DA)
+    ReqB->>ReqB: Check 200 DA < 800 DA -> Insufficient
+    ReqB->>PG: Rollback transaction
+    PG-->>ReqB: 400 Error (Insufficient balance)
 ```
-
-Because Request B has to wait in line, it sees the updated `200 DA` balance and is safely rejected.
 
 ---
 
-## 2. Preventing Traffic Jams (**Deadlocks**)
+## 2. Deadlock Prevention via Deterministic Lock Ordering (Implemented Today)
 
-A **deadlock** happens when two transactions freeze each other forever:
-* Transaction 1 locks **Wallet A** and waits for **Wallet B**.
-* Transaction 2 locks **Wallet B** and waits for **Wallet A**.
-* Neither can move, so the database has to kill one of them.
+A **deadlock** occurs when Transaction 1 holds Wallet A and waits for Wallet B while Transaction 2 holds Wallet B and waits for Wallet A.
 
-### The Fix: Deterministic Lock Ordering
-In [`src/services/wallet.js`](../src/services/wallet.js) and [`src/services/payment.js`](../src/services/payment.js), whenever two wallets are involved, the code **sorts their ID numbers from smallest to largest** before locking them:
+Both [`src/services/wallet.js`](../src/services/wallet.js) and [`src/services/payment.js`](../src/services/payment.js) prevent deadlocks by sorting wallet IDs from smallest to largest before calling `.for('update')`:
 
 ```javascript
-// Always lock the wallet with the smaller ID number first
 const walletIdsInOrder = [customerWallet.id, merchantWallet.id].sort((a, b) => a - b);
 ```
 
-If Wallet #3 and Wallet #8 are involved, **every** transaction always locks #3 first, then #8. A circular wait is mathematically impossible.
+Every Blendinar v1 multi-row transaction extends this exact ascending lock-ordering pattern across wallets, top-ups, hand-in batches, checkout sessions, payout rows, and refund requests.
 
 ---
 
-## 3. Single-Use Payment Codes & State Machine
+## 3. Baseline Single-Use Payment Codes & State Machine (Cohort v0)
 
-A **state machine** is a rulebook that lists every allowed status an item can have and how it can move from one status to another. In [`src/services/payment.js`](../src/services/payment.js), a payment code has 3 possible statuses:
+In [`src/services/payment.js`](../src/services/payment.js), Cohort v0 payment codes use **Lock-Before-Mutate** (`FOR UPDATE` on `payment_requests`), **Lazy Expiration** (`now > expiresAt`), and human-friendly 6-character codes:
 
 ```mermaid
 stateDiagram-v2
-    [*] --> pending : Shop creates 6-char code (valid for 5 mins)
-    pending --> completed : Customer enters password & has enough money
-    pending --> expired : More than 5 mins have passed
-    completed --> [*] : Cannot be used a second time
-    expired --> [*] : Rejected with 400 error
+    [*] --> pending : Merchant creates 6-char code (5 min TTL)
+    pending --> completed : Customer confirms with password and balance
+    pending --> expired : Clock past expiresAt on lookup or confirm
+    completed --> [*] : Cannot be reused
+    expired --> [*] : Rejected with 400
 ```
-
-* **Lock-Before-Mutate:** Inside `confirmPaymentRequest`, the database locks the `payment_requests` row *first* (`FOR UPDATE`) before checking if it is still `pending`. That way, two people cannot redeem the same code at the same time.
-* **Lazy Expiration:** Instead of running a background timer every second to expire old codes, the app simply checks the clock (`now > expiresAt`) whenever someone looks up or confirms a code, and marks it `expired` right then.
-* **Human-Friendly Codes:** `generateCode()` picks 6 random characters from `ABCDEFGHJKLMNPQRSTUVWXYZ23456789` (skipping confusing look-alike characters `I`, `O`, `0`, `1`).
 
 ---
 
-## 4. Safe Retries with Idempotency Keys
+## 4. Idempotency Keys: Verified Baseline Behavior & Task 16 Fixes
 
-**Idempotency** means: *if you send the exact same request twice (for example, because your phone's Wi-Fi blinked and retried), the server runs it **only once** and gives you back the exact same receipt.*
+**Idempotency** ensures that if a client retries the exact same request (e.g., mobile network drop), the financial mutation runs **at most once** and returns the original receipt.
 
-### How It Works ([`src/services/payment.js`](../src/services/payment.js))
-1. **Client sends a unique ID:** The app looks for a unique tag (an **Idempotency Key**) in the request header (`Idempotency-Key` or `X-Idempotency-Key`) or body (`idempotencyKey` or `requestId`).
-2. **Check if already done:** Before charging anything, `confirmPaymentRequest` checks the `idempotency_keys` table. If that key is already saved for this user, it immediately returns the saved JSON receipt—no second charge!
-3. **Save the receipt inside the transaction:** When a payment succeeds for the first time, the receipt is saved into `idempotency_keys` inside the **same** database transaction as the wallet update.
+### Three Verified Findings in Cohort Baseline v0 (`src/db/schema.js` & `src/services/payment.js`)
+Inspecting the current baseline implementation reveals three concrete limitations that **Task 16** in [`_docs/tasks.md`](../_docs/tasks.md) explicitly fixes:
+1. **Global `key` Uniqueness Collision:** `idempotency_keys.key` in [`src/db/schema.js`](../src/db/schema.js) has a global `.unique()` index rather than composite `(user_id, endpoint, key)` scoping, so two different users sending the same generic key string collide on insert.
+2. **Pre-Transaction TOCTOU Race Window:** In `confirmPaymentRequest` ([`src/services/payment.js`](../src/services/payment.js)), the `idempotency_keys` lookup executes *before* `db.transaction(...)` starts, allowing two identical-key requests arriving at the same millisecond to race past the read check before the first inserts its key.
+3. **Idempotency Lookup Runs Before Password Check:** In `confirmPaymentRequest` today, the cached `idempotency_keys` lookup executes at the top of the function *before* `bcrypt.compare(password, ...)`. In Blendinar (**Task 16** & `R12-B`), **authentication, live account suspension check, and password verification MUST execute BEFORE returning any cached idempotent response**, and payload mismatches (`request_hash`) must be rejected (`409`/`422`).
 
-### Two Small Things a Senior Engineer Would Improve Later
-* **Key uniqueness:** Right now, `idempotency_keys.key` is unique across the *whole table* rather than per user (`(user_id, key)`). If two different users accidentally used the same generic key like `"pay-1"`, the second user's key wouldn't be saved (though their payment still works).
-* **Exact-millisecond duplicate key:** Because the `idempotency_keys` lookup happens right *before* the database transaction starts, two identical-key requests arriving at the exact same millisecond could race past the lookup, and the second one would hit `"Payment code already used"` instead of returning the cached receipt. Checking inside the transaction or re-reading on a duplicate-key error (`23505`) would close that tiny window.
+---
+
+## 5. Blendinar v1 Concurrency Sequences & State Machines *(Planned in `_docs/tasks.md`)*
+
+### 5.1 Option B Top-Up & Admin Hand-In State Machine + Double-Confirm Protection
+
+```mermaid
+stateDiagram-v2
+    [*] --> pending_hand_in : Agent records fixed-preset cash collection
+    pending_hand_in --> confirmed : Admin confirms full cash hand-in (Credits Spendable)
+    pending_hand_in --> shortage_hold : Admin receives less cash than collected (O-05)
+    pending_hand_in --> disputed : Admin or audit flags discrepancy
+    shortage_hold --> confirmed : Admin reconciles shortage and releases approved portion
+    shortage_hold --> disputed : Escalated dispute
+```
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor AdminA as Admin 1
+    actor AdminB as Admin 2
+    participant API as Hand-In Service
+    participant DB as PostgreSQL
+
+    par Concurrent hand-in confirmation
+        AdminA->>API: POST confirm hand-in #42
+        AdminB->>API: POST confirm hand-in #42
+    end
+    API->>DB: Transaction A locks hand_in #42 + top_ups + wallets (FOR UPDATE)
+    API->>DB: Transaction B waits on hand_in #42 row lock
+    DB-->>API: Transaction A transitions pending_hand_in to confirmed and credits C_spend
+    API-->>AdminA: 200 OK (Spendable Balance Released Once)
+    DB-->>API: Transaction B acquires lock and sees status = confirmed
+    API->>DB: Transaction B rolls back
+    API-->>AdminB: 400 or 409 Already Confirmed (Zero Double Credit)
+```
+
+### 5.2 External Merchant Website & Blendinar Hosted Checkout Sequence
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor Customer as Tourist Customer
+    participant Store as External Merchant Website
+    participant Checkout as Blendinar Hosted Checkout
+    participant DB as PostgreSQL
+
+    Store->>Checkout: POST /api/merchant/checkout-sessions (API Key + Secret, 5000 DZD)
+    Checkout->>DB: Validate active merchant, cap, return_url -> Save pending session
+    Checkout-->>Store: sessionId + Hosted Checkout URL
+    Store-->>Customer: Redirect browser to Blendinar Hosted Checkout
+    Customer->>Checkout: Inspect Merchant Name, Website Domain, Badge, 0 Customer Fee
+    Customer->>Checkout: POST confirm (Password + Idempotency-Key)
+    Checkout->>Checkout: Verify JWT, live status = active, and bcrypt password BEFORE replay
+    Checkout->>DB: Lock session, customer spendable, merchant payable, fee account (FOR UPDATE)
+    DB-->>Checkout: Deduct 5000 DZD, credit Merchant (5000 - fee), credit Blendinar fee
+    Checkout-->>Customer: 200 OK + Redirect to validated return_url
+```
+
+### 5.3 Daily Merchant CCP Payout State Machine & Double-Run Cutoff Guard
+
+```mermaid
+stateDiagram-v2
+    [*] --> prepared : Daily cutoff batch locks payable balance
+    prepared --> settled : Admin confirms simulated CCP transfer
+    prepared --> delayed : Admin marks settlement delayed
+    prepared --> failed : Simulated transfer fails (Payable preserved)
+    settled --> disputed : Merchant or Admin flags discrepancy
+    settled --> reversed : Corrective reconciliation entry appended
+    delayed --> settled : Admin confirms settlement
+    failed --> prepared : Re-queued in next valid batch
+```
+
+- Concurrent cutoff preparation or Admin settlement calls lock `(merchant_id, cutoff_window)` and the `merchant_payable` row (`FOR UPDATE`), ensuring a daily payout batch can settle **at most once**.
+
+### 5.4 Customer Pre-Departure Refund Races (Payment vs. Refund & Cancel vs. Payout)
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor Customer as Tourist
+    actor Agent as Blendinar Agent
+    participant API as Refund & Checkout Services
+    participant DB as PostgreSQL
+
+    par Payment vs Refund Lock Race (3000 DZD Spendable)
+        Customer->>API: Confirm 3000 DZD Hosted Checkout
+        Customer->>API: Request 3000 DZD Cash Refund Lock
+    end
+    API->>DB: Lock customer wallet row (FOR UPDATE)
+    Note over API,DB: First transaction claims 3000 DZD; second sees 0 Spendable and rejects 400
+
+    Note over Customer,DB: Later at Fixed-Location Office
+    par Cancel vs Agent Payout Race
+        Customer->>API: Cancel Refund Request (if allowed per O-10)
+        Agent->>API: Verify Passport and Mark Refund Paid
+    end
+    API->>DB: Lock refund_request row + wallet row (FOR UPDATE)
+    Note over API,DB: First updates status to paid (or cancelled); second fails cleanly
+```
