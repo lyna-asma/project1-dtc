@@ -5,9 +5,28 @@ import { db, pool } from '../db/index.js';
 import { users, wallets } from '../db/schema.js';
 
 export async function seedAdmin(options = {}) {
-  const phone = options.phone || process.env.ADMIN_PHONE || '0555000000';
-  const password = options.password || process.env.ADMIN_PASSWORD || 'Admin1234!';
-  const name = options.name || process.env.ADMIN_NAME || 'Platform Admin';
+  const rawPhone = options.phone ?? process.env.ADMIN_PHONE;
+  const rawPassword = options.password ?? process.env.ADMIN_PASSWORD;
+
+  if (
+    typeof rawPhone !== 'string' ||
+    rawPhone.trim() === '' ||
+    typeof rawPassword !== 'string' ||
+    rawPassword.trim() === ''
+  ) {
+    throw new Error(
+      'ADMIN_PHONE and ADMIN_PASSWORD must be explicitly provided to seed an admin account'
+    );
+  }
+
+  const phone = rawPhone.trim();
+  const password = rawPassword;
+
+  const rawName = options.name ?? process.env.ADMIN_NAME;
+  const name =
+    typeof rawName === 'string' && rawName.trim() !== ''
+      ? rawName.trim()
+      : 'Platform Admin';
 
   const [existingUser] = await db
     .select()

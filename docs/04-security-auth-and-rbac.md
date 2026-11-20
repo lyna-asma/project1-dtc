@@ -59,19 +59,19 @@ In [`src/services/otp.js`](../src/services/otp.js):
 ## 3. Password Protection & JWTs (Implemented Today + Task 18 Hardening)
 
 * **Password Hashing (`bcryptjs`):** Stored hashed (cost factor `10`), never plaintext.
-* **Re-Confirmation on Payments:** Even with a valid JWT, `confirmPaymentRequest` verifies the customer's password again via `bcrypt.compare` before debiting funds. *(Note: **Task 16** moves this password check strictly ahead of any cached idempotency replay.)*
+* **Re-Confirmation on Payments:** Even with a valid JWT, `confirmPaymentRequest` verifies the customer's password again via `bcrypt.compare` before debiting funds (`401` ahead of idempotency replay per **Task 16**).
 * **JWTs (`src/middleware/auth.js`):** `generateToken` issues 24-hour tokens signed with `getJwtSecret()`.
-  * **Planned Hardening (Task 18):** Today `src/middleware/auth.js` defines `DEFAULT_JWT_SECRET` as a local dev fallback when `JWT_SECRET` is unset; Task 18 enforces failing loudly in `NODE_ENV === 'production'` if `JWT_SECRET` is missing.
+  * **Fail-Fast Production Secret Guard (`Task 18` Implemented):** [`src/middleware/auth.js`](../src/middleware/auth.js) keeps `DEFAULT_JWT_SECRET` strictly for non-production local development, while throwing `JWT_SECRET must be explicitly configured in production` whenever `NODE_ENV === 'production'` and `JWT_SECRET` is missing, blank, or matches any legacy placeholder — checked lazily in `getJwtSecret()`, propagated cleanly ahead of `try/catch` in `requireAuth`, and enforced before port binding in `startServer()` ([`src/index.js`](../src/index.js)).
 
 ---
 
-## 4. Permissions & Role Checks (Cohort Baseline v0)
+## 4. Permissions & Role Checks (Cohort Baseline v0 + Task 18)
 
 **RBAC** (*Role-Based Access Control*) restricts routes by user role in [`src/middleware/auth.js`](../src/middleware/auth.js):
-1. **`requireAuth`**: Validates `Authorization: Bearer <token>`, returning `401` if missing, malformed, tampered, or expired.
+1. **`requireAuth`**: Validates `Authorization: Bearer <token>`, returning `401` if missing, malformed, tampered, or expired (after loading `getJwtSecret()`).
 2. **`requireRole(...roles)`**: Checks `req.user.role` against allowed roles (`customer`, `merchant`, `admin` in Cohort v0), returning `403` on mismatch.
 3. **`requireSelfOrAdmin`**: Defined in `src/middleware/auth.js` as a reusable guard for parameterized `:userId` routes (currently routes read `req.user.id` directly from the verified JWT rather than trusting client-supplied IDs).
-4. **No Self-Registered Admins:** `POST /api/auth/register` rejects `role: 'admin'` with `403`. Admins are created solely by [`src/scripts/seed-admin.js`](../src/scripts/seed-admin.js).
+4. **No Self-Registered Admins & Hardened Admin Seeding (`Task 18`):** `POST /api/auth/register` rejects `role: 'admin'` with `403`. Admins are created solely by [`src/scripts/seed-admin.js`](../src/scripts/seed-admin.js), which fails loudly unless explicit non-empty `ADMIN_PHONE` and `ADMIN_PASSWORD` values are supplied (zero hardcoded fallbacks).
 5. **Production Fault-Injection Lock-Off:** `_testFailureAfterBalanceUpdate` is forced `false` whenever `NODE_ENV === 'production'`.
 
 ---

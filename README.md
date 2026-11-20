@@ -61,12 +61,12 @@ A cash-to-digital wallet and hosted online-merchant payment platform prototype e
 - **5-Minute 6-Char Payment Codes & Baseline Concurrency (Task 7 & partial Task 9 / `#12`–`#13`):** `POST /api/merchant/payment-requests`, `GET /api/customer/payment-requests/:code`, `POST /api/customer/payment-requests/:code/confirm`, idempotency replay, dual-800-DA race, and baseline balance conservation (`tests/payment-concurrency.test.js`).
 - **Docker Compose & Multi-Branch CI (partial Task 15 / `#20` + Task 17):** `Dockerfile`, `docker-compose.yml`, `.github/workflows/ci.yml` (`main` + `next-product`).
 - **Task 16 Scoped Idempotency & Overflow Guard (`next-product`):** Composite `(user_id, endpoint, key)` + `request_hash`, password check before replay, `pg_advisory_xact_lock`, and `MAX_SAFE_DINARS` validation (`drizzle/0004_elite_titania.sql`, `src/services/validation.js`).
-- **Automated Real-PostgreSQL Tests:** **10 test files, 148 passing tests** on `next-product` (**137 tests** in Cohort Baseline v0 on `main`, including `tests/otp-demo-mode.test.js`).
-- **Frontend Scaffold:** React 19 + Vite 6 + Tailwind CSS 4 starter card in `src/client/App.jsx`.
+- **Task 18 Secret/Seed Hardening & Blendinar Starter Branding (`next-product`):** Fail-fast production `JWT_SECRET` validation in `getJwtSecret()` / `startServer()`, env-required `seed-admin.js` (zero hardcoded credentials in code, `docker-compose.yml`, or `.env.example`), and Blendinar simulated-money banner + essential-storage footer in `index.html` / `src/client/App.jsx`.
+- **Automated Real-PostgreSQL Tests:** **11 test files, 155 passing tests** verified on `next-product` (including `tests/otp-demo-mode.test.js` and `tests/security-hardening.test.js`; **10 test files, 137 tests** in Cohort Baseline v0 on `main`).
+- **Frontend Scaffold:** React 19 + Vite 6 + Tailwind CSS 4 Blendinar simulated-money starter shell in `index.html` and `src/client/App.jsx`.
 
-### Planned Blendinar v1 Scope (`_docs/plan.md` & `_docs/tasks.md` Milestones 1–9)
-- Env-only admin/JWT hardening & clean shop-float baseline replacement (`Task 18`; Tasks 16–17 implemented on `next-product`).
-- Email-first registration + simulated email OTP + optional phone (`Task 19`), passport-only KYC stages (`Task 20`), live `requireAuth` account suspension (`Task 21`).
+### Planned Blendinar v1 Scope (`_docs/plan.md` & `_docs/tasks.md` Milestones 2–9; Milestone 1 `Tasks 16–18` Complete)
+- Email-first registration + simulated email OTP + optional phone (`Task 19`), two-step hybrid passport verification (`Task 20`), live `requireAuth` account suspension (`Task 21`).
 - Employee `agent` role, Fixed-Location Offices vs. Individual Agents, Cash Exposure Limits, and in-app Agent Directory & Trust Verification (`Tasks 22–23`).
 - Option B fixed-preset pending cash top-ups, Admin hand-in release, and cash shortage reconciliation (`Tasks 24–26`).
 - External merchant onboarding, manual `Verified` status, API credentials, Hosted Checkout + configurable merchant fees, and centralized limits (`Tasks 12/27, 28, 29, 8`).
@@ -97,9 +97,9 @@ cp .env.example .env
 Configure database, JWT, and local admin seed environment variables in `.env` (never commit `.env` or hardcode admin passwords in docs):
 - `PORT` (`3000`)
 - `DATABASE_URL` (`postgres://postgres:postgres@localhost:5432/wallet_db`)
-- `JWT_SECRET` (long random string in production)
+- `JWT_SECRET` (required strong random secret in `NODE_ENV=production` — server and auth reject missing/placeholder values cleanly)
 - `DEMO_MODE` (`true` for local/demo OTP inspection; off by default in code)
-- `ADMIN_PHONE` (or `ADMIN_EMAIL` once migrated in Task 19), `ADMIN_PASSWORD`, `ADMIN_NAME` — read by `src/scripts/seed-admin.js`
+- `ADMIN_PHONE` (or `ADMIN_EMAIL` once migrated in Task 19), `ADMIN_PASSWORD`, `ADMIN_NAME` — **required** explicit values read by `src/scripts/seed-admin.js` (zero hardcoded defaults)
 
 ### One-Command Docker Compose
 ```bash
@@ -146,7 +146,7 @@ Run the full automated real-PostgreSQL test suite:
 ```bash
 npm test
 ```
-Executes `vitest run --no-file-parallelism` across all **10 test files (148 automated tests** on `next-product`; **137 tests** in Cohort Baseline v0 on `main`) in `tests/` (including `tests/otp-demo-mode.test.js`).
+Executes `vitest run --no-file-parallelism` across all **11 test files (155 passing tests** on `next-product`; **10 test files, 137 tests** in Cohort Baseline v0 on `main`) in `tests/` (including `tests/otp-demo-mode.test.js` and `tests/security-hardening.test.js`).
 
 Run an individual test file:
 ```bash
@@ -177,9 +177,9 @@ project1-dtc/
 │   ├── routes/                   # auth, customer, merchant, admin routes
 │   ├── services/                 # otp, wallet, and payment business services
 │   ├── scripts/                  # Idempotent admin seed script (src/scripts/seed-admin.js)
-│   └── client/                   # React 19 + Vite 6 + Tailwind CSS 4 starter card (App.jsx)
+│   └── client/                   # React 19 + Vite 6 + Tailwind CSS 4 Blendinar simulated-money shell (App.jsx)
 ├── drizzle/                      # Forward-only SQL migrations
-├── tests/                        # Real-PostgreSQL Vitest + Supertest suites (10 files; 148 tests on next-product, 137 in Cohort v0 on main)
+├── tests/                        # Real-PostgreSQL Vitest + Supertest suites (11 test files, 155 passing tests on next-product; 137 in Cohort v0 on main)
 ├── .github/workflows/ci.yml      # GitHub Actions CI pipeline
 ├── AGENTS.md                     # Repo-wide AI agent rules and commands
 ├── Dockerfile                    # Multi-step container build & startup
@@ -215,13 +215,13 @@ Blendinar follows a **5-agent engineering workflow** defined in [`_docs/process.
 5. **Independent Reviewer (`_docs/team/reviewer.md`):** Audits sensitive financial, schema, auth, and architectural tasks before coding and after QA (`## REVIEW: APPROVE` / `## REVIEW: CHANGES REQUESTED`).
 
 ### Verified Progress Today
-Cohort Baseline tasks `1`–`7` plus partial `9` and `15` are verified on `main` (**10 test files, 137 passing tests**). On **`next-product`**, **Task 16** (scoped `(user_id, endpoint, key)` idempotency, payload hashing, auth-before-replay, `pg_advisory_xact_lock`, and `MAX_SAFE_DINARS` overflow guard) and **Task 17** (`main` + `next-product` CI coverage) are implemented with **10 test files and 148 passing tests** (`npm test`), while remaining Blendinar v1 features (`Tasks 8, 12/27, 13, 14, 18–35`) proceed sequentially through gated milestones.
+Cohort Baseline tasks `1`–`7` plus partial `9` and `15` are verified on `main` (**10 test files, 137 passing tests**). On **`next-product`**, **Milestone 1 (`Tasks 16–18`) is Complete** — **Task 16** (scoped `(user_id, endpoint, key)` idempotency, payload hashing, auth-before-replay, `pg_advisory_xact_lock`, and `MAX_SAFE_DINARS` overflow guard), **Task 17** (`main` + `next-product` CI coverage), and **Task 18** (fail-fast production `JWT_SECRET`, env-only `seed-admin.js`, and Blendinar starter shell) — with **11 test files and 155 passing tests** (`npm test`), while remaining Blendinar v1 features (`Tasks 8, 12/27, 13, 14, 19–35`) proceed sequentially through gated milestones.
 
 ---
 
 ## Continuous Integration & Deployment Guide (Not Deployed Yet)
 
-- **CI (`.github/workflows/ci.yml`):** Runs PostgreSQL 16 migrations (`npx drizzle-kit migrate`), the full real-DB suite (`npm test` — **10 test files, 148 tests** on `next-product`; **137 tests** in Cohort Baseline v0 on `main`), and production build verification (`npm run build`) on pushes and pull requests to both **`main`** and **`next-product`**.
+- **CI (`.github/workflows/ci.yml`):** Runs PostgreSQL 16 migrations (`npx drizzle-kit migrate`), the full real-DB suite (`npm test` — **11 test files, 155 passing tests** on `next-product`; **137 tests** in Cohort Baseline v0 on `main`), and production build verification (`npm run build`) on pushes and pull requests to both **`main`** and **`next-product`**.
 - **Hosting Status:** **Not deployed publicly yet.** `Dockerfile` builds the frontend, runs `npx drizzle-kit migrate && node src/scripts/seed-admin.js && node src/index.js`, and listens on `PORT` (`3000`).
 
 ### Render Deployment Environment Variables (Reference)

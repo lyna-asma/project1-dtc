@@ -95,7 +95,7 @@ This backlog preserves all **15 historical Cohort Baseline v0 tasks (`Task 1`–
 - **Open owner decisions:** `None`.
 
 #### Task 18: Admin Seed Credential Hardening, Legacy Baseline Replacement (`O-12`) & Simulated-Money Branding
-- **Status:** `Ready for Grooming / Active Blendinar v1`
+- **Status:** `Completed (Blendinar v1 — Milestone 1)` *(verified on `next-product`: `11` test files, `155` passed, `npm run build` passed, `QA: PASS`, `REVIEW: APPROVE`)*
 - **Goal:** Remove any hardcoded fallback admin credentials or weak fallback secrets in runtime/seed scripts, establish clean Blendinar v1 replacement of Cohort v0 shop-float & phone-mandatory code on `next-product` per **`O-12 (Confirmed)`**, and add Blendinar branding + persistent simulated-money notice to starter app shell.
 - **In plain words:** Secures how the initial admin account and login tokens are configured (reading from environment variables instead of hardcoded defaults), keeps Cohort Baseline v0 untouched on `main` while cleanly replacing legacy shop-float code on `next-product`, and stamps Blendinar's simulated-money notice onto the starter app.
 - **Product plan rules & requirements:** `_docs/plan.md` Simulated-Money Notice, `O-12` (`Confirmed`); `_docs/design-system.md` Section 2A; `AGENTS.md` safeguards.
@@ -103,10 +103,10 @@ This backlog preserves all **15 historical Cohort Baseline v0 tasks (`Task 1`–
   - *Happy path:* Operator starts stack with env-configured `ADMIN_EMAIL` / `ADMIN_PASSWORD` and `JWT_SECRET` -> `npm run seed:admin` creates admin idempotently; UI displays Blendinar + fake-money banner; legacy shop-float endpoints are cleanly retired on `next-product` (not left as dead parallel routes) while `drizzle/0000`–`0003` remain immutable.
   - *Failure:* Running `NODE_ENV=production` without `JWT_SECRET` or running `seed-admin.js` without env admin credentials fails loudly with a clear startup error rather than falling back to hardcoded weak secrets.
 - **Acceptance criteria:**
-  - [ ] `src/scripts/seed-admin.js` reads admin credentials solely from environment variables (never hardcoded password/phone fallback in code or docs) and fails cleanly if missing.
-  - [ ] `src/middleware/auth.js` refuses default dev JWT fallback when `NODE_ENV === 'production'`.
-  - [ ] On `next-product`, legacy shop-float code (`adminLoadShopBalance`, `merchantTopUp`, phone-mandatory auth) is retired/replaced cleanly across Milestones 1–4 without touching `main` or editing `drizzle/0000`–`0003`.
-  - [ ] `index.html` and `src/client/App.jsx` display **Blendinar** title and visible *"100% fake/simulated DZD"* notice.
+  - [x] `src/scripts/seed-admin.js` reads admin credentials solely from environment variables (never hardcoded password/phone fallback in code or docs) and fails cleanly if missing.
+  - [x] `src/middleware/auth.js` refuses default dev JWT fallback when `NODE_ENV === 'production'`.
+  - [x] On `next-product`, legacy shop-float code (`adminLoadShopBalance`, `merchantTopUp`, phone-mandatory auth) is retired/replaced cleanly across Milestones 1–4 without touching `main` or editing `drizzle/0000`–`0003`.
+  - [x] `index.html` and `src/client/App.jsx` display **Blendinar** title and visible *"100% fake/simulated DZD"* notice.
 - **Out of scope:** Full customer/agent/merchant/admin React portals (Tasks 13–14).
 - **Dependencies:** Task 16, Task 17.
 - **Relevant existing implementation or files:** `src/scripts/seed-admin.js`, `src/middleware/auth.js`, `index.html`, `src/client/App.jsx`, `.env.example`.

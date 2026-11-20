@@ -243,18 +243,18 @@ describe('Role-Based Access Control, Middleware & Admin Seed (Issue #8)', () => 
   describe('Admin seed script (seedAdmin)', () => {
     it('creates an admin account with verified status and zero balance wallet', async () => {
       const admin = await seedAdmin({
-        phone: '0555000000',
-        password: 'Admin1234!',
+        phone: '0555990001',
+        password: 'TestAdminSecret123!',
         name: 'Platform Admin',
       });
 
       expect(admin).toBeDefined();
-      expect(admin.phone).toBe('0555000000');
+      expect(admin.phone).toBe('0555990001');
       expect(admin.role).toBe('admin');
       expect(admin.isVerified).toBe(true);
 
       // Verify password hashed
-      const isPasswordValid = await bcrypt.compare('Admin1234!', admin.passwordHash);
+      const isPasswordValid = await bcrypt.compare('TestAdminSecret123!', admin.passwordHash);
       expect(isPasswordValid).toBe(true);
 
       // Verify wallet initialized with balance 0
@@ -269,7 +269,7 @@ describe('Role-Based Access Control, Middleware & Admin Seed (Issue #8)', () => 
       // Verify admin can immediately log in via POST /api/auth/login
       const loginRes = await request(mainApp)
         .post('/api/auth/login')
-        .send({ phone: '0555000000', password: 'Admin1234!' });
+        .send({ phone: '0555990001', password: 'TestAdminSecret123!' });
 
       expect(loginRes.status).toBe(200);
       expect(loginRes.body.user.role).toBe('admin');
@@ -278,14 +278,14 @@ describe('Role-Based Access Control, Middleware & Admin Seed (Issue #8)', () => 
 
     it('is idempotent: running seed repeatedly does not fail or duplicate entries', async () => {
       const firstRun = await seedAdmin({
-        phone: '0555000000',
-        password: 'Admin1234!',
+        phone: '0555990001',
+        password: 'TestAdminSecret123!',
         name: 'Platform Admin',
       });
 
       const secondRun = await seedAdmin({
-        phone: '0555000000',
-        password: 'Admin1234!',
+        phone: '0555990001',
+        password: 'TestAdminSecret123!',
         name: 'Platform Admin',
       });
 

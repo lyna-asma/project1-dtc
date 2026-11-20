@@ -3,12 +3,14 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import express from 'express';
 import { app } from './app.js';
+import { getJwtSecret } from './middleware/auth.js';
 
 const PORT = Number(process.env.PORT) || 3000;
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 async function startServer() {
   if (process.env.NODE_ENV === 'production') {
+    getJwtSecret();
     const distPath = path.resolve(__dirname, '../dist');
     app.use(express.static(distPath));
     app.get('*', (_req, res) => {
@@ -28,5 +30,14 @@ async function startServer() {
   });
 }
 
-startServer();
+const isDirectRun =
+  process.argv[1] &&
+  path.resolve(process.argv[1]) === path.resolve(fileURLToPath(import.meta.url));
+
+if (isDirectRun) {
+  startServer();
+}
+
+export { startServer };
+export default app;
 

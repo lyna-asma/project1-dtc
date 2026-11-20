@@ -2,8 +2,29 @@ import jwt from 'jsonwebtoken';
 
 export const DEFAULT_JWT_SECRET = 'dev-jwt-secret-key-change-in-production';
 
+const LEGACY_PLACEHOLDERS = [
+  DEFAULT_JWT_SECRET,
+  'dev-secret-key-change-in-production',
+  'docker-jwt-secret-key-change-in-production',
+];
+
 export function getJwtSecret() {
-  return process.env.JWT_SECRET || DEFAULT_JWT_SECRET;
+  const secret = process.env.JWT_SECRET;
+
+  if (process.env.NODE_ENV === 'production') {
+    if (
+      typeof secret !== 'string' ||
+      secret.trim() === '' ||
+      LEGACY_PLACEHOLDERS.includes(secret.trim())
+    ) {
+      throw new Error('JWT_SECRET must be explicitly configured in production');
+    }
+    return secret;
+  }
+
+  return typeof secret === 'string' && secret.trim() !== ''
+    ? secret
+    : DEFAULT_JWT_SECRET;
 }
 
 /**
@@ -32,9 +53,10 @@ export function requireAuth(req, res, next) {
   }
 
   const token = parts[1].trim();
+  const secret = getJwtSecret();
 
   try {
-    const decoded = jwt.verify(token, getJwtSecret());
+    const decoded = jwt.verify(token, secret);
     req.user = decoded;
     return next();
   } catch (err) {

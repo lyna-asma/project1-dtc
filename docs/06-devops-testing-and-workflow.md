@@ -2,21 +2,22 @@
 
 ## 1. Automated Testing: Proving Everything Against Real PostgreSQL
 
-Rather than mocking the database, Blendinar runs all **10 test files** in [`tests/`](../tests/) (**148 automated tests** on `next-product` after Task 16; **137 tests** in Cohort Baseline v0 on `main`) against a **real PostgreSQL 16 database** via **Vitest** and **Supertest** (`npm test` -> `vitest run --no-file-parallelism`).
+Rather than mocking the database, Blendinar runs all **11 test files** in [`tests/`](../tests/) (**155 automated tests** verified on `next-product`; **10 test files, 137 tests** in Cohort Baseline v0 on `main`) against a **real PostgreSQL 16 database** via **Vitest** and **Supertest** (`npm test` -> `vitest run --no-file-parallelism`).
 
-| Test File | Verified Baseline (`main`) | What It Proves Today (Cohort Baseline v0 + Task 16 on `next-product`) |
-| :--- | :---: | :--- |
-| `tests/health.test.js` | 2 | Server boots cleanly and `/health` + `/api/health` respond `{"status":"ok"}`. |
-| `tests/auth-register.test.js` | 16 | Phone format rules, duplicate blocking, simulated OTP creation & verification. |
-| `tests/otp-demo-mode.test.js` | 4 | `isOtpExposed()` hides simulated OTP logs and HTTP endpoint in production unless `DEMO_MODE=true`. |
-| `tests/auth-login.test.js` | 6 | `bcrypt` password verification, unverified user blocking, and JWT issuance. |
-| `tests/rbac.test.js` | 15 | Missing/invalid token `401` and role/resource isolation `403` across `customer`, `merchant`, and `admin`. |
-| `tests/wallet-ledger.test.js` | 18 | Zero-balance initialization, centime math, and private chronological customer ledger. |
-| `tests/admin-load.test.js` | 23 | Admin loading funds into a shop, input boundaries, and crash-rollback proof (`+1` `MAX_SAFE_DINARS` overflow guard on `next-product` = 24). |
-| `tests/merchant-topup.test.js` | 27 | Shop crediting customer wallet, insufficient shop funds rejection, self-top-up block, and rollback proof (`+1` `MAX_SAFE_DINARS` overflow guard on `next-product` = 28). |
-| `tests/payment.test.js` | 23 | 5-min payment codes, password checks, expiration, invalid states, and rollback proof (`+1` `MAX_SAFE_DINARS` overflow guard on `next-product` = 24). |
-| `tests/payment-concurrency.test.js` | 3 | Payment idempotency replay, dual simultaneous `800 DA` payments on `1,000 DA` balance, and baseline conservation (`+8` Task 16 scoped idempotency, password-before-replay, `409` mismatch & advisory-lock race tests on `next-product` = 11). |
-| **Total Verified Tests** | **137 (`main`) / 148 (`next-product`)** | **10 test files passing with `--no-file-parallelism` (`_docs/testing-guidelines.md`)** |
+| Test File | Cohort v0 (`main`) | Active (`next-product`) | What It Proves Today |
+| :--- | :---: | :---: | :--- |
+| `tests/health.test.js` | 2 | 2 | Server boots cleanly and `/health` + `/api/health` respond `{"status":"ok"}`. |
+| `tests/auth-register.test.js` | 16 | 16 | Phone format rules, duplicate blocking, simulated OTP creation & verification. |
+| `tests/otp-demo-mode.test.js` | 4 | 4 | `isOtpExposed()` hides simulated OTP logs and HTTP endpoint in production unless `DEMO_MODE=true`. |
+| `tests/auth-login.test.js` | 6 | 6 | `bcrypt` password verification, unverified user blocking, and JWT issuance. |
+| `tests/rbac.test.js` | 15 | 15 | Missing/invalid token `401`, role/resource isolation `403`, and env-explicit admin seeding (`seedAdmin`). |
+| `tests/wallet-ledger.test.js` | 18 | 18 | Zero-balance initialization, centime math, and private chronological customer ledger. |
+| `tests/admin-load.test.js` | 23 | 24 | Admin loading funds into a shop, input boundaries, `MAX_SAFE_DINARS` overflow guard (Task 16), and crash-rollback proof. |
+| `tests/merchant-topup.test.js` | 27 | 28 | Shop crediting customer wallet, insufficient shop funds rejection, `MAX_SAFE_DINARS` overflow guard (Task 16), and rollback proof. |
+| `tests/payment.test.js` | 23 | 24 | 5-min payment codes, password checks, expiration, `MAX_SAFE_DINARS` overflow guard (Task 16), and rollback proof. |
+| `tests/payment-concurrency.test.js` | 3 | 11 | Dual simultaneous `800 DA` race, conservation, and Task 16 scoped `(user_id, endpoint, key)` idempotency, password-before-replay, `409` mismatch & advisory-lock race proofs. |
+| `tests/security-hardening.test.js` | 0 | 7 | Task 18 fail-fast production `JWT_SECRET` enforcement (`getJwtSecret`, `requireAuth`, `startServer`) and env-only `seedAdmin` hardening. |
+| **Total Verified Tests** | **137 (10 files)** | **155 (11 files)** | **All suites passing with `--no-file-parallelism` (`_docs/testing-guidelines.md`)** |
 
 ### Crash-Simulation Testing (**Fault Injection**)
 To prove mid-transaction failures never leave half-finished money movements:
@@ -43,7 +44,7 @@ flowchart LR
 ```
 
 * **Idempotent Admin Seeding ([`src/scripts/seed-admin.js`](../src/scripts/seed-admin.js)):** Safe to run repeatedly on container boot without duplicating the admin account.
-* **Credential Safety (Hardened in Task 18):** Never publish hardcoded admin passwords or phone numbers in documentation or templates. Configure initial admin credentials through environment variables (`ADMIN_PHONE` / `ADMIN_EMAIL`, `ADMIN_PASSWORD`, `ADMIN_NAME` in `.env` or secret store).
+* **Credential & Production Secret Hardening (`Task 18` Implemented):** `seed-admin.js` requires explicit non-empty `ADMIN_PHONE` and `ADMIN_PASSWORD` (no hardcoded fallbacks in code, `docker-compose.yml`, `.env.example`, or docs). In `NODE_ENV === 'production'`, `getJwtSecret()` (`src/middleware/auth.js`) and `startServer()` (`src/index.js`) fail loudly before listening if `JWT_SECRET` is missing, blank, or matches a legacy placeholder. Configure credentials via `.env` or your host secret manager (`ADMIN_PHONE` / `ADMIN_EMAIL`, `ADMIN_PASSWORD`, `ADMIN_NAME`, `JWT_SECRET`).
 
 ---
 
@@ -53,7 +54,7 @@ GitHub Actions runs on pushes and pull requests to both **`main`** and **`next-p
 1. Starts PostgreSQL 16 with healthchecks.
 2. Runs `npm ci`.
 3. Applies migrations (`npx drizzle-kit migrate`).
-4. Runs the full real-DB suite (`npm test` — **10 test files / 148 automated tests** on `next-product` after Task 16; **137 tests** in Cohort Baseline v0 on `main`).
+4. Runs the full real-DB suite (`npm test` — **11 test files / 155 automated tests** verified on `next-product`; **10 files / 137 tests** in Cohort Baseline v0 on `main`).
 5. Verifies the Vite production frontend build (`npm run build`).
 
 ---
@@ -80,9 +81,9 @@ flowchart LR
 
 ## 5. Current Baseline vs. Blendinar v1 Roadmap
 
-The Cohort Baseline v0 backend, concurrency proof, Docker packaging, and CI pipeline on `main` are verified (**10 test files, 137 tests**). On **`next-product`**, **Task 16** (scoped `(user_id, endpoint, key)` idempotency, payload hashing, auth-before-replay, `pg_advisory_xact_lock`, and `MAX_SAFE_DINARS` overflow guard — bringing `npm test` to **10 test files, 148 automated tests**) and **Task 17** (`main` + `next-product` CI coverage) are implemented; remaining Blendinar v1 work continues across **9 milestones** documented in [`_docs/plan.md`](../_docs/plan.md) and [`_docs/tasks.md`](../_docs/tasks.md):
-1. **M1:** Scoped idempotency `(user_id, endpoint, key)` + auth-before-replay + overflow guard (`Task 16`, **Done**), `next-product` CI (`Task 17`), and secret/seed hardening & simulated-money branding (`Task 18`).
-2. **M2:** Email-first auth + simulated email OTP + optional phone (`Task 19`), passport-only KYC stages (`Task 20`), and live account suspension preserving balances (`Task 21`).
+The Cohort Baseline v0 backend, concurrency proof, Docker packaging, and CI pipeline on `main` are verified (**10 test files, 137 tests**). On **`next-product`**, **Milestone 1 (`Tasks 16–18`) is Complete** (**11 test files, 155 passing automated tests**, `npm run build` verified); remaining Blendinar v1 work continues across **Milestones 2–9** documented in [`_docs/plan.md`](../_docs/plan.md) and [`_docs/tasks.md`](../_docs/tasks.md):
+1. **M1 (`Complete`):** Scoped idempotency `(user_id, endpoint, key)` + auth-before-replay + overflow guard (`Task 16`, **Completed**), `next-product` CI (`Task 17`, **Completed**), and fail-fast secret/seed hardening & simulated-money branding (`Task 18`, **Completed**).
+2. **M2:** Email-first auth + simulated email OTP + optional phone (`Task 19`), two-step hybrid passport verification (`Task 20`), and live account suspension preserving balances (`Task 21`).
 3. **M3:** Employee `agent` role, Fixed-Location Offices vs. Individual Agents, Cash Exposure Limits (`Task 22`), and customer Agent Directory + in-app verification (`Task 23`).
 4. **M4 (`[Stop Point]`):** Option B fixed-preset pending top-ups (`Task 24`), Admin hand-in release (`Task 25`), and shortage/discrepancy audit flags (`Task 26`).
 5. **M5:** External merchant website/CCP onboarding & manual verification (`Task 12 / Task 27`), API keys & Hosted Checkout session backend (`Task 28`).
